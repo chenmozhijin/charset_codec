@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.11.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: clippy, rustfmt
+      - run: dart pub get
+      - run: python tool/export_codec_data.py
+      - run: git diff --exit-code
+      - run: python tool/check_license_headers.py
+      - name: Check Dart format
+        id: dart_format
+        continue-on-error: true
+        run: dart format --output=none --set-exit-if-changed lib test benchmark hook
+      - name: Show Dart format diff
+        if: steps.dart_format.outcome == 'failure'
+        run: dart format benchmark/codec_benchmark.dart
+      - name: Fail on Dart format drift
+        if: steps.dart_format.outcome == 'failure'
+        run: git diff --exit-code -- benchmark/codec_benchmark.dart
+      - run: cargo fmt --manifest-path native/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path native/Cargo.toml
+      - run: dart analyze
+      - name: Prepare conformance fixtures
+        shell: pwsh
+        run: ./tool/prepare_test_fixtures.ps1
+      - run: dart test
+
+  browser:
+    name: Chrome fallback
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.11.0
+      - run: dart pub get
+      - run: dart test -p chrome
+
+  publish-dry-run:
+    name: Pub dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.11.0
+      - run: dart pub get
+      - run: dart pub publish --dry-run

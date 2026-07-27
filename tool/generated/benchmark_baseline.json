@@ -1,0 +1,172 @@
+{
+  "active_backend": "native-hybrid",
+  "warmup_iterations": 100,
+  "measure_iterations": 1000,
+  "benchmarks": {
+    "cold_cp932_decode": {
+      "elapsed_us_total": 6335,
+      "avg_us_per_op": 6.335,
+      "ops_per_sec": 157853.19652722968
+    },
+    "alias_resolve_cp932": {
+      "elapsed_us_total": 579,
+      "avg_us_per_op": 0.579,
+      "ops_per_sec": 1727115.7167530225
+    },
+    "hot_ascii_decode": {
+      "elapsed_us_total": 6373,
+      "avg_us_per_op": 6.373,
+      "ops_per_sec": 156911.97238349286
+    },
+    "hot_ascii_encode": {
+      "elapsed_us_total": 6006,
+      "avg_us_per_op": 6.006,
+      "ops_per_sec": 166500.1665001665
+    },
+    "hot_utf8_decode": {
+      "elapsed_us_total": 10996,
+      "avg_us_per_op": 10.996,
+      "ops_per_sec": 90942.16078574027
+    },
+    "hot_utf8_encode": {
+      "elapsed_us_total": 6989,
+      "avg_us_per_op": 6.989,
+      "ops_per_sec": 143081.98597796538
+    },
+    "hot_utf16_decode": {
+      "elapsed_us_total": 7754,
+      "avg_us_per_op": 7.754,
+      "ops_per_sec": 128965.69512509672
+    },
+    "hot_utf16_encode": {
+      "elapsed_us_total": 7403,
+      "avg_us_per_op": 7.403,
+      "ops_per_sec": 135080.372821829
+    },
+    "hot_gbk_decode": {
+      "elapsed_us_total": 3161,
+      "avg_us_per_op": 3.161,
+      "ops_per_sec": 316355.5836760519
+    },
+    "hot_gbk_encode": {
+      "elapsed_us_total": 2739,
+      "avg_us_per_op": 2.739,
+      "ops_per_sec": 365096.75063891936
+    },
+    "cold_cp950_decode": {
+      "elapsed_us_total": 3286,
+      "avg_us_per_op": 3.286,
+      "ops_per_sec": 304321.3633597079
+    },
+    "cold_cp950_encode": {
+      "elapsed_us_total": 2734,
+      "avg_us_per_op": 2.734,
+      "ops_per_sec": 365764.447695684
+    },
+    "hot_euc_jp_decode": {
+      "elapsed_us_total": 5909,
+      "avg_us_per_op": 5.909,
+      "ops_per_sec": 169233.37282112034
+    },
+    "hot_euc_jp_encode": {
+      "elapsed_us_total": 2840,
+      "avg_us_per_op": 2.84,
+      "ops_per_sec": 352112.67605633807
+    },
+    "hot_gb18030_decode": {
+      "elapsed_us_total": 4659,
+      "avg_us_per_op": 4.659,
+      "ops_per_sec": 214638.334406525
+    },
+    "hot_gb18030_encode": {
+      "elapsed_us_total": 5931,
+      "avg_us_per_op": 5.931,
+      "ops_per_sec": 168605.6314280897
+    },
+    "hot_hz_decode": {
+      "elapsed_us_total": 3059,
+      "avg_us_per_op": 3.059,
+      "ops_per_sec": 326904.2170644001
+    },
+    "hot_hz_encode": {
+      "elapsed_us_total": 2550,
+      "avg_us_per_op": 2.55,
+      "ops_per_sec": 392156.8627450981
+    },
+    "hot_iso2022jp_decode": {
+      "elapsed_us_total": 3720,
+      "avg_us_per_op": 3.72,
+      "ops_per_sec": 268817.20430107525
+    },
+    "hot_iso2022jp_encode": {
+      "elapsed_us_total": 2746,
+      "avg_us_per_op": 2.746,
+      "ops_per_sec": 364166.0597232338
+    },
+    "hot_iso2022kr_decode": {
+      "elapsed_us_total": 2791,
+      "avg_us_per_op": 2.791,
+      "ops_per_sec": 358294.51809387316
+    },
+    "hot_iso2022kr_encode": {
+      "elapsed_us_total": 2690,
+      "avg_us_per_op": 2.69,
+      "ops_per_sec": 371747.2118959108
+    },
+    "hot_cp932_decode": {
+      "elapsed_us_total": 2269,
+      "avg_us_per_op": 2.269,
+      "ops_per_sec": 440722.7853680035
+    },
+    "hot_cp932_encode": {
+      "elapsed_us_total": 2070,
+      "avg_us_per_op": 2.07,
+      "ops_per_sec": 483091.78743961354
+    },
+    "hot_mac_arabic_decode": {
+      "elapsed_us_total": 1698,
+      "avg_us_per_op": 1.698,
+      "ops_per_sec": 588928.1507656067
+    },
+    "hot_mac_romanian_encode": {
+      "elapsed_us_total": 2024,
+      "avg_us_per_op": 2.024,
+      "ops_per_sec": 494071.14624505927
+    },
+    "validate_utf8": {
+      "elapsed_us_total": 970,
+      "avg_us_per_op": 0.97,
+      "ops_per_sec": 1030927.8350515465
+    },
+    "validate_cp932": {
+      "elapsed_us_total": 1804,
+      "avg_us_per_op": 1.804,
+      "ops_per_sec": 554323.7250554324
+    },
+    "incremental_cp932_decode": {
+      "elapsed_us_total": 5170,
+      "avg_us_per_op": 5.17,
+      "ops_per_sec": 193423.59767891682
+    },
+    "incremental_cp932_encode": {
+      "elapsed_us_total": 2683,
+      "avg_us_per_op": 2.683,
+      "ops_per_sec": 372717.1077152442
+    },
+    "incremental_gb18030_decode": {
+      "elapsed_us_total": 7360,
+      "avg_us_per_op": 7.36,
+      "ops_per_sec": 135869.5652173913
+    },
+    "incremental_gb18030_encode": {
+      "elapsed_us_total": 12699,
+      "avg_us_per_op": 12.699,
+      "ops_per_sec": 78746.35798094339
+    }
+  },
+  "memory_probe": {
+    "cold_cp932_decode_rss_before": 302985216,
+    "cold_cp932_decode_rss_after": 302985216,
+    "cold_cp932_decode_rss_delta": 0
+  }
+}

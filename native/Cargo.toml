@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "charset_codec_native"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[profile.dev]
+# FFI 导出层使用 catch_unwind 将意外 panic 转成可诊断错误，因此构建策略必须允许展开。
+panic = "unwind"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "unwind"

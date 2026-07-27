@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+# Miscellaneous
+*.class
+*.log
+*.pyc
+__pycache__/
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+# Libraries should not include pubspec.lock, per https://dart.dev/guides/libraries/private-files#pubspeclock.
+/pubspec.lock
+/pubspec_overrides.yaml
+**/doc/api/
+.dart_tool/
+.flutter-plugins-dependencies
+/build/
+/coverage/
+/test/data/
+/test/.fixtures/
+/native/target/
+/tool/generated/benchmark_history/
+*.snapshot
+*.diff
+
+# 维护者本地文档，不进入 Git 或发布归档
+/docs/internal/
+/doc/

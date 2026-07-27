@@ -1,0 +1,2829 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+"""Export generated compatibility assets for charset_codec.
+
+This exporter combines three source classes:
+
+- project-maintained catalog metadata from ``tool/vendor/codec_catalog.json``
+- vendored CPython-derived alias metadata from ``tool/vendor/cpython_aliases.json``
+- observable behavior from Python's standard ``codecs`` module
+
+The outputs are generated compatibility assets for this project. They are not a
+verbatim mirror of CPython source files or a direct export of the CPython
+runtime implementation.
+"""
+
+from __future__ import annotations
+
+import base64
+import codecs
+import hashlib
+import json
+import re
+import shutil
+import struct
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT_LIB = ROOT / "lib" / "src" / "generated"
+OUT_TOOL = ROOT / "tool" / "generated"
+OUT_NATIVE_RUST = ROOT / "native" / "generated"
+OUT_NATIVE_ASSETS = ROOT / "native" / "assets" / "generated"
+OUT_NATIVE_HOT = OUT_NATIVE_ASSETS / "mbcs_hot"
+OUT_NATIVE_MANIFEST = OUT_NATIVE_ASSETS / "native_manifest.json"
+LEGACY_OUT_NATIVE_TOOL = OUT_TOOL / "native"
+LEGACY_OUT_NATIVE_MANIFEST = OUT_TOOL / "native_manifest.json"
+# Vendored snapshot derived from CPython ``Lib/encodings/aliases.py``.
+CPYTHON_ALIASES_SNAPSHOT = ROOT / "tool" / "vendor" / "cpython_aliases.json"
+# Project-maintained canonical codec catalog used to scope generated assets.
+CODEC_CATALOG = ROOT / "tool" / "vendor" / "codec_catalog.json"
+CODEC_CATALOG_ENTRY_COUNT = 103
+NATIVE_ABI_VERSION = 3
+GENERATED_SOURCE_HEADER = [
+    "// 此文件由 tool/export_codec_data.py 自动生成，请勿手动修改。",
+    "// SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>",
+    "// SPDX-FileCopyrightText: 2001 Python Software Foundation",
+    "// SPDX-License-Identifier: MIT AND PSF-2.0",
+    "",
+]
+
+
+def _format_generated_rust(paths: list[Path]) -> str:
+    rustfmt = shutil.which("rustfmt")
+    if rustfmt is None:
+        raise RuntimeError("rustfmt is required to generate native Rust assets")
+    # manifest 必须记录 rustfmt 后的最终字节，否则格式化门禁会让生成哈希永久失配。
+    for path in paths:
+        subprocess.run(
+            [rustfmt, "--edition", "2024", str(path)],
+            cwd=ROOT / "native",
+            check=True,
+        )
+    completed = subprocess.run(
+        [rustfmt, "--version"],
+        cwd=ROOT / "native",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+NATIVE_HOT_TABLE_CODECS: tuple[str, ...] = (
+    "big5",
+    "cp932",
+    "euc-jp",
+    "euc-kr",
+    "gbk",
+    "shift_jis",
+)
+
+MBCS_TABLE_CODEC_CONFIG: dict[str, dict[str, object]] = {
+    "big5": {"max_len": 2, "triple_leads": []},
+    "big5hkscs": {"max_len": 2, "triple_leads": []},
+    "cp950": {"max_len": 2, "triple_leads": []},
+    "cp932": {"max_len": 2, "triple_leads": []},
+    "cp949": {"max_len": 2, "triple_leads": []},
+    "euc-jp": {"max_len": 3, "triple_leads": [0x8F]},
+    "euc-jis-2004": {"max_len": 3, "triple_leads": [0x8F]},
+    "euc-jisx0213": {"max_len": 3, "triple_leads": [0x8F]},
+    "euc-kr": {"max_len": 2, "triple_leads": []},
+    "gb2312": {"max_len": 2, "triple_leads": []},
+    "gbk": {"max_len": 2, "triple_leads": []},
+    "johab": {"max_len": 2, "triple_leads": []},
+    "shift-jisx0213": {"max_len": 2, "triple_leads": []},
+    "shift_jis": {"max_len": 2, "triple_leads": []},
+    "shift_jis_2004": {"max_len": 2, "triple_leads": []},
+}
+
+MBCS_STATEFUL_CODEC_NAMES: tuple[str, ...] = (
+    "gb18030",
+    "hz-gb-2312",
+    "iso-2022-jp",
+    "iso-2022-kr",
+    "iso2022-jp-1",
+    "iso2022-jp-2",
+    "iso2022-jp-3",
+    "iso2022-jp-2004",
+    "iso2022-jp-ext",
+)
+
+ISO2022_SET_DEFINITIONS: dict[str, dict[str, object]] = {
+    "ascii": {"mode": "g0", "width": 1, "designate": bytes([0x1B, 0x28, 0x42])},
+    "jisx0201_r": {"mode": "g0", "width": 1, "designate": bytes([0x1B, 0x28, 0x4A])},
+    "jisx0201_k": {"mode": "g0", "width": 1, "designate": bytes([0x1B, 0x28, 0x49])},
+    "jisx0208": {"mode": "g0", "width": 2, "designate": bytes([0x1B, 0x24, 0x42])},
+    "jisx0208_o": {"mode": "g0", "width": 2, "designate": bytes([0x1B, 0x24, 0x40])},
+    "jisx0212": {"mode": "g0", "width": 2, "designate": bytes([0x1B, 0x24, 0x28, 0x44])},
+    "ksx1001": {"mode": "g0", "width": 2, "designate": bytes([0x1B, 0x24, 0x28, 0x43])},
+    "gb2312": {"mode": "g0", "width": 2, "designate": bytes([0x1B, 0x24, 0x28, 0x41])},
+    "jisx0213_2004_1": {
+        "mode": "g0",
+        "width": 2,
+        "designate": bytes([0x1B, 0x24, 0x28, 0x51]),
+    },
+    "jisx0213_2": {"mode": "g0", "width": 2, "designate": bytes([0x1B, 0x24, 0x28, 0x50])},
+    "iso8859_1_g2": {"mode": "g2", "width": 1, "designate": bytes([0x1B, 0x2E, 0x41])},
+    "iso8859_7_g2": {"mode": "g2", "width": 1, "designate": bytes([0x1B, 0x2E, 0x46])},
+}
+
+ISO2022_CODEC_SET_ORDER: dict[str, list[str]] = {
+    "iso-2022-jp": [
+        "jisx0208",
+        "jisx0201_r",
+        "jisx0208_o",
+    ],
+    "iso2022-jp-1": [
+        "jisx0208",
+        "jisx0212",
+        "jisx0201_r",
+        "jisx0208_o",
+    ],
+    "iso2022-jp-2": [
+        "jisx0208",
+        "jisx0212",
+        "ksx1001",
+        "gb2312",
+        "jisx0201_r",
+        "jisx0208_o",
+        "iso8859_1_g2",
+        "iso8859_7_g2",
+    ],
+    "iso2022-jp-2004": [
+        "jisx0208",
+        "jisx0213_2004_1",
+        "jisx0213_2",
+    ],
+    "iso2022-jp-3": [
+        "jisx0208",
+        "jisx0213_2",
+    ],
+    "iso2022-jp-ext": [
+        "jisx0208",
+        "jisx0212",
+        "jisx0201_r",
+        "jisx0201_k",
+        "jisx0208_o",
+    ],
+}
+
+_INVALID_CP = 0xFFFFFFFF
+_MULTI_CP = 0xFFFFFFFE
+BLOB_FORMAT_VERSION = 3
+MBCS_DOUBLE_STORAGE_KIND = "row_compressed_v1"
+
+
+@dataclass(frozen=True)
+class CodecCatalogEntry:
+    name: str
+    python_codec: str
+    is_multibyte: bool
+    aliases: tuple[str, ...]
+
+def _load_codec_catalog(
+    catalog_path: Path,
+) -> tuple[list[CodecCatalogEntry], dict[str, str]]:
+    if not catalog_path.is_file():
+        raise RuntimeError(
+            f"Missing codec catalog: {catalog_path}. "
+            "Add tool/vendor/codec_catalog.json first."
+        )
+    raw = json.loads(catalog_path.read_text(encoding="utf-8"))
+    canonical_to_python = raw.get("canonicalToPythonCodec")
+    if not isinstance(canonical_to_python, dict):
+        raise RuntimeError(f"Invalid codec catalog format: {catalog_path}")
+    multibyte_raw = raw.get("multibyteCanonicals")
+    if not isinstance(multibyte_raw, list):
+        raise RuntimeError(f"Invalid multibyteCanonicals in codec catalog: {catalog_path}")
+    aliases_raw = raw.get("aliasesByCanonical", {})
+    if not isinstance(aliases_raw, dict):
+        raise RuntimeError(f"Invalid aliasesByCanonical in codec catalog: {catalog_path}")
+
+    out: list[CodecCatalogEntry] = []
+    multibyte = {str(name).strip().lower() for name in multibyte_raw if str(name).strip()}
+    unknown_multibyte = sorted(multibyte - {str(k).strip().lower() for k in canonical_to_python})
+    if unknown_multibyte:
+        raise RuntimeError(
+            "Unknown multibyte canonical names in catalog: "
+            f"{', '.join(unknown_multibyte)}"
+        )
+    for name in sorted(canonical_to_python):
+        canonical = str(name).strip().lower()
+        python_codec = str(canonical_to_python[name]).strip().lower()
+        if not canonical or not python_codec:
+            raise RuntimeError(f"Invalid canonical/python codec mapping: {name!r}")
+        alias_list = aliases_raw.get(canonical, [])
+        if not isinstance(alias_list, list):
+            raise RuntimeError(f"Invalid aliasesByCanonical[{canonical!r}] value")
+        aliases = tuple(
+            str(alias).strip().lower() for alias in alias_list if str(alias).strip()
+        )
+        out.append(
+            CodecCatalogEntry(
+                name=canonical,
+                python_codec=python_codec,
+                is_multibyte=canonical in multibyte,
+                aliases=aliases,
+            )
+        )
+    if len(out) != CODEC_CATALOG_ENTRY_COUNT:
+        raise RuntimeError(
+            "Unexpected codec catalog size. "
+            f"Expected {CODEC_CATALOG_ENTRY_COUNT}, got {len(out)}."
+        )
+    meta = {
+        "kind": "vendored_codec_catalog",
+        "path": str(catalog_path.relative_to(ROOT)).replace("\\", "/"),
+        "sha256": _sha256_text(catalog_path),
+    }
+    return out, meta
+
+
+def _load_cpython_aliases_from_snapshot(
+    snapshot_path: Path,
+) -> tuple[dict[str, str], dict[str, str]]:
+    if not snapshot_path.is_file():
+        raise RuntimeError(
+            "Missing vendored CPython aliases snapshot. "
+            f"Expected file: {snapshot_path}."
+        )
+    raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    aliases_raw = raw.get("aliases")
+    if not isinstance(aliases_raw, dict):
+        raise RuntimeError(f"Invalid aliases snapshot: {snapshot_path}")
+    aliases = {str(k).lower(): str(v).lower() for k, v in aliases_raw.items()}
+    source = raw.get("source")
+    source_sha = ""
+    if isinstance(source, dict):
+        source_sha_value = source.get("sha256")
+        if isinstance(source_sha_value, str):
+            source_sha = source_sha_value
+    if not source_sha:
+        source_sha = _sha256_text(snapshot_path)
+    meta = {
+        "mode": "vendored_snapshot",
+        "snapshot_path": str(snapshot_path.relative_to(ROOT)).replace("\\", "/"),
+        "snapshot_sha256": _sha256_text(snapshot_path),
+        "source_sha256": source_sha,
+    }
+    return aliases, meta
+
+
+def _sha256_text(path: Path) -> str:
+    # Git 在不同平台可能检出 LF 或 CRLF；文本来源统一按 LF 计算哈希，避免误报生成漂移。
+    data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_without_ascii_whitespace(path: Path) -> str:
+    data = bytes(
+        byte
+        for byte in path.read_bytes()
+        if byte not in (0x09, 0x0A, 0x0C, 0x0D, 0x20)
+    )
+    return hashlib.sha256(data).hexdigest()
+
+
+def _dart_string(s: str) -> str:
+    out: list[str] = ['"']
+    for ch in s:
+        code = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "$":
+            out.append("\\$")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif code < 0x20 or code in (0x2028, 0x2029):
+            out.append(f"\\u{code:04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _rust_string(s: str) -> str:
+    out: list[str] = ['"']
+    for ch in s:
+        code = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif code < 0x20 or code in (0x2028, 0x2029):
+            out.append(f"\\u{{{code:04X}}}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _format_list(values: list[str | int]) -> str:
+    return ", ".join(_dart_string(v) if isinstance(v, str) else str(v) for v in values)
+
+
+def _normalize_alias(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", name.strip().lower())
+    return normalized.strip("_")
+
+
+def _native_file_codec_name(name: str) -> str:
+    return name.replace("-", "_")
+
+
+def _build_registry_aliases(
+    entries,
+    cpython_aliases: dict[str, str],
+) -> dict[str, list[str]]:
+    canonical_to_aliases: dict[str, set[str]] = {}
+    for alias, target in cpython_aliases.items():
+        try:
+            canonical = codecs.lookup(target).name
+        except LookupError:
+            continue
+        canonical_to_aliases.setdefault(canonical, set()).add(alias)
+
+    result: dict[str, list[str]] = {}
+    for e in entries:
+        aliases = set(e.aliases)
+        try:
+            canonical = codecs.lookup(e.python_codec).name
+        except LookupError:
+            canonical = e.python_codec.lower()
+        aliases.update(canonical_to_aliases.get(canonical, set()))
+        result[e.name] = sorted(aliases)
+    return result
+
+
+def _build_single_byte_tables(entries) -> dict[str, list[int]]:
+    tables: dict[str, list[int]] = {}
+    for e in entries:
+        if e.is_multibyte:
+            continue
+        codec = e.python_codec.lower()
+        if codec.startswith("utf-"):
+            continue
+        table: list[int] = []
+        for b in range(256):
+            try:
+                decoded = bytes([b]).decode(e.python_codec, errors="strict")
+            except Exception:
+                table.append(-1)
+                continue
+            if len(decoded) != 1:
+                table.append(-1)
+                continue
+            table.append(ord(decoded))
+        tables[e.name] = table
+    return tables
+
+
+def _build_single_byte_encode_tables(
+    entries, decode_tables: dict[str, list[int]]
+) -> dict[str, dict[int, int]]:
+    encode_tables: dict[str, dict[int, int]] = {}
+    for e in entries:
+        if e.is_multibyte:
+            continue
+        codec = e.python_codec.lower()
+        if codec.startswith("utf-"):
+            continue
+        canonical = e.name.lower()
+        decode_table = decode_tables.get(canonical)
+        if decode_table is None:
+            continue
+        encode_map: dict[int, int] = {}
+        for b, cp in enumerate(decode_table):
+            if cp < 0:
+                continue
+            ch = chr(cp)
+            try:
+                encoded = ch.encode(e.python_codec, errors="strict")
+            except Exception:
+                continue
+            if len(encoded) == 1 and encoded[0] == b:
+                encode_map[cp] = b
+        encode_tables[canonical] = encode_map
+    return encode_tables
+
+
+def _set_bit(bitset: bytearray, index: int) -> None:
+    byte_index = index >> 3
+    bit_index = index & 7
+    bitset[byte_index] |= 1 << bit_index
+
+
+def _build_shift_jis_2004_validity_bitsets() -> tuple[bytes, bytes]:
+    single_valid = bytearray(32)  # 256 bits
+    pair_valid = bytearray(8192)  # 65536 bits
+    single_ok = [False] * 256
+
+    for b in range(256):
+        try:
+            bytes([b]).decode("shift_jis_2004", errors="strict")
+        except UnicodeDecodeError:
+            continue
+        single_ok[b] = True
+        _set_bit(single_valid, b)
+
+    for b1 in range(256):
+        if single_ok[b1]:
+            continue
+        for b2 in range(256):
+            try:
+                bytes([b1, b2]).decode("shift_jis_2004", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            _set_bit(pair_valid, (b1 << 8) | b2)
+
+    return bytes(single_valid), bytes(pair_valid)
+
+
+def _build_multibyte_tables(entries):
+    entry_by_name = {e.name.lower(): e for e in entries}
+
+    single_tables: dict[str, list[int]] = {}
+    double_decode_maps: dict[str, dict[int, str]] = {}
+    triple_decode_maps: dict[str, dict[int, str]] = {}
+    encode_maps: dict[str, dict[int, list[int]]] = {}
+    implemented: list[str] = []
+
+    for name in sorted(MBCS_TABLE_CODEC_CONFIG):
+        entry = entry_by_name.get(name)
+        if entry is None:
+            continue
+        codec_name = entry.python_codec
+        config = MBCS_TABLE_CODEC_CONFIG[name]
+        max_len = int(config["max_len"])
+        triple_leads = list(config["triple_leads"])
+
+        single_table = [-1] * 256
+        for b in range(256):
+            try:
+                decoded = bytes([b]).decode(codec_name, errors="strict")
+            except UnicodeDecodeError:
+                continue
+            if len(decoded) == 1:
+                single_table[b] = ord(decoded)
+        single_tables[name] = single_table
+
+        double_map: dict[int, str] = {}
+        for b1 in range(256):
+            if single_table[b1] >= 0:
+                continue
+            for b2 in range(256):
+                try:
+                    decoded = bytes([b1, b2]).decode(codec_name, errors="strict")
+                except UnicodeDecodeError:
+                    continue
+                double_map[(b1 << 8) | b2] = decoded
+        double_decode_maps[name] = double_map
+
+        triple_map: dict[int, str] = {}
+        if max_len >= 3:
+            leads: list[int]
+            if triple_leads:
+                leads = [int(x) for x in triple_leads]
+            else:
+                leads = [b for b in range(256) if single_table[b] < 0]
+            for b1 in leads:
+                if single_table[b1] >= 0:
+                    continue
+                for b2 in range(256):
+                    if ((b1 << 8) | b2) in double_map:
+                        continue
+                    for b3 in range(256):
+                        try:
+                            decoded = bytes([b1, b2, b3]).decode(
+                                codec_name,
+                                errors="strict",
+                            )
+                        except UnicodeDecodeError:
+                            continue
+                        triple_map[(b1 << 16) | (b2 << 8) | b3] = decoded
+        triple_decode_maps[name] = triple_map
+
+        candidate_codepoints: set[int] = {
+            cp for cp in single_table if cp >= 0
+        }
+        for decoded in double_map.values():
+            if len(decoded) == 1:
+                candidate_codepoints.add(ord(decoded))
+        for decoded in triple_map.values():
+            if len(decoded) == 1:
+                candidate_codepoints.add(ord(decoded))
+
+        encode_map: dict[int, list[int]] = {}
+        for cp in sorted(candidate_codepoints):
+            ch = chr(cp)
+            try:
+                encoded = ch.encode(codec_name, errors="strict")
+            except UnicodeEncodeError:
+                continue
+            if not encoded or len(encoded) > max_len:
+                continue
+            try:
+                roundtrip = encoded.decode(codec_name, errors="strict")
+            except UnicodeDecodeError:
+                continue
+            if roundtrip != ch:
+                continue
+            encode_map[cp] = list(encoded)
+        encode_maps[name] = encode_map
+        implemented.append(name)
+
+    pending = sorted(
+        e.name.lower()
+        for e in entries
+        if e.is_multibyte and e.name.lower() not in implemented
+    )
+
+    return (
+        single_tables,
+        double_decode_maps,
+        triple_decode_maps,
+        encode_maps,
+        sorted(implemented),
+        pending,
+    )
+
+
+def _build_hz_maps() -> tuple[dict[int, str], dict[int, list[int]]]:
+    decode_map: dict[int, str] = {}
+    for b1 in range(0x21, 0x7F):
+        for b2 in range(0x21, 0x7F):
+            try:
+                decoded = bytes([b1 + 0x80, b2 + 0x80]).decode("gb2312", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            decode_map[(b1 << 8) | b2] = decoded
+
+    encode_map: dict[int, list[int]] = {}
+    for decoded in decode_map.values():
+        if len(decoded) != 1:
+            continue
+        cp = ord(decoded)
+        try:
+            encoded = decoded.encode("gb2312", errors="strict")
+        except UnicodeEncodeError:
+            continue
+        if len(encoded) != 2:
+            continue
+        b1, b2 = encoded
+        if not (0xA1 <= b1 <= 0xFE and 0xA1 <= b2 <= 0xFE):
+            continue
+        encode_map[cp] = [b1 - 0x80, b2 - 0x80]
+
+    return decode_map, encode_map
+
+
+def _build_iso2022kr_maps() -> tuple[dict[int, str], dict[int, list[int]]]:
+    decode_map: dict[int, str] = {}
+    for b1 in range(0x21, 0x7F):
+        for b2 in range(0x21, 0x7F):
+            try:
+                decoded = bytes([b1 + 0x80, b2 + 0x80]).decode("euc_kr", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            decode_map[(b1 << 8) | b2] = decoded
+
+    encode_map: dict[int, list[int]] = {}
+    for decoded in decode_map.values():
+        if len(decoded) != 1:
+            continue
+        cp = ord(decoded)
+        try:
+            encoded = decoded.encode("euc_kr", errors="strict")
+        except UnicodeEncodeError:
+            continue
+        if len(encoded) != 2:
+            continue
+        b1, b2 = encoded
+        if not (0xA1 <= b1 <= 0xFE and 0xA1 <= b2 <= 0xFE):
+            continue
+        encode_map[cp] = [b1 - 0x80, b2 - 0x80]
+
+    return decode_map, encode_map
+
+
+def _gb18030_pointer_to_seq(pointer: int) -> tuple[int, int, int, int]:
+    tc = pointer
+    b4 = (tc % 10) + 0x30
+    tc //= 10
+    b3 = (tc % 126) + 0x81
+    tc //= 126
+    b2 = (tc % 10) + 0x30
+    tc //= 10
+    b1 = tc + 0x81
+    return b1, b2, b3, b4
+
+
+def _build_gb18030_maps() -> tuple[dict[int, str], dict[int, list[int]], list[tuple[int, int, int]]]:
+    double_decode_map: dict[int, str] = {}
+    for b1 in range(256):
+        for b2 in range(256):
+            try:
+                decoded = bytes([b1, b2]).decode("gb18030", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            if len(decoded) != 1:
+                continue
+            double_decode_map[(b1 << 8) | b2] = decoded
+
+    double_encode_map: dict[int, list[int]] = {}
+    candidate_codepoints = sorted({ord(s) for s in double_decode_map.values() if len(s) == 1})
+    for cp in candidate_codepoints:
+        ch = chr(cp)
+        try:
+            encoded = ch.encode("gb18030", errors="strict")
+        except UnicodeEncodeError:
+            continue
+        if len(encoded) == 2:
+            double_encode_map[cp] = [encoded[0], encoded[1]]
+
+    pointer_to_cp: list[int] = []
+    for pointer in range(39420):
+        b1, b2, b3, b4 = _gb18030_pointer_to_seq(pointer)
+        decoded = bytes([b1, b2, b3, b4]).decode("gb18030", errors="strict")
+        if len(decoded) != 1:
+            raise RuntimeError(f"Unexpected gb18030 4-byte decode length for pointer {pointer}")
+        pointer_to_cp.append(ord(decoded))
+
+    ranges: list[tuple[int, int, int]] = []
+    range_base = 0
+    first_cp = pointer_to_cp[0]
+    prev_cp = first_cp
+    for pointer in range(1, len(pointer_to_cp)):
+        cp = pointer_to_cp[pointer]
+        if cp == prev_cp + 1:
+            prev_cp = cp
+            continue
+        ranges.append((first_cp, prev_cp, range_base))
+        range_base = pointer
+        first_cp = cp
+        prev_cp = cp
+    ranges.append((first_cp, prev_cp, range_base))
+
+    return double_decode_map, double_encode_map, ranges
+
+
+def _build_iso2022_maps() -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, list[int]]],
+    dict[str, int],
+    dict[str, str],
+]:
+    decode_maps: dict[str, dict[int, str]] = {}
+    encode_maps: dict[str, dict[int, list[int]]] = {}
+    width_map: dict[str, int] = {}
+    mode_map: dict[str, str] = {}
+
+    set_to_codec: dict[str, str] = {}
+    for canonical, set_ids in ISO2022_CODEC_SET_ORDER.items():
+        codec_name = canonical.replace("-", "_")
+        for set_id in set_ids:
+            set_to_codec.setdefault(set_id, codec_name)
+
+    reset_ascii = bytes([0x1B, 0x28, 0x42])
+    for set_id in sorted(set_to_codec):
+        codec_name = set_to_codec[set_id]
+        definition = ISO2022_SET_DEFINITIONS[set_id]
+        mode = str(definition["mode"])
+        width = int(definition["width"])
+        designate = bytes(definition["designate"])
+        decoded_by_key: dict[int, str] = {}
+
+        if mode == "g0" and width == 1:
+            for b in range(0x20, 0x7F):
+                seq = designate + bytes([b]) + reset_ascii
+                try:
+                    decoded = seq.decode(codec_name, errors="strict")
+                except UnicodeDecodeError:
+                    continue
+                if decoded:
+                    decoded_by_key[b] = decoded
+        elif mode == "g0" and width == 2:
+            for b1 in range(0x21, 0x7F):
+                for b2 in range(0x21, 0x7F):
+                    seq = designate + bytes([b1, b2]) + reset_ascii
+                    try:
+                        decoded = seq.decode(codec_name, errors="strict")
+                    except UnicodeDecodeError:
+                        continue
+                    if decoded:
+                        decoded_by_key[(b1 << 8) | b2] = decoded
+        elif mode == "g2" and width == 1:
+            for b in range(0x00, 0x80):
+                seq = designate + bytes([0x1B, 0x4E, b]) + reset_ascii
+                try:
+                    decoded = seq.decode(codec_name, errors="strict")
+                except UnicodeDecodeError:
+                    continue
+                if decoded:
+                    decoded_by_key[b] = decoded
+        else:
+            raise RuntimeError(f"Unsupported ISO-2022 set definition for {set_id}")
+
+        encoded_by_cp: dict[int, list[int]] = {}
+        for key in sorted(decoded_by_key):
+            decoded = decoded_by_key[key]
+            if len(decoded) != 1:
+                continue
+            cp = ord(decoded)
+            if cp in encoded_by_cp:
+                continue
+            if width == 1:
+                encoded_by_cp[cp] = [key]
+            else:
+                encoded_by_cp[cp] = [(key >> 8) & 0xFF, key & 0xFF]
+
+        decode_maps[set_id] = decoded_by_key
+        encode_maps[set_id] = encoded_by_cp
+        width_map[set_id] = width
+        mode_map[set_id] = mode
+
+    return decode_maps, encode_maps, width_map, mode_map
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _pack_dense_decode_values(
+    values: list[int], side_map: dict[int, str] | None = None
+) -> bytes:
+    blob = bytearray()
+    blob.extend(struct.pack("<I", len(values)))
+    for cp in values:
+        value = cp if cp >= 0 else _INVALID_CP
+        blob.extend(struct.pack("<I", value))
+
+    side = side_map or {}
+    blob.extend(struct.pack("<I", len(side)))
+    for key in sorted(side):
+        encoded = side[key].encode("utf-8")
+        blob.extend(struct.pack("<I", key))
+        blob.extend(struct.pack("<H", len(encoded)))
+        blob.extend(encoded)
+    return bytes(blob)
+
+
+def _pack_dense_decode_map(
+    decode_map: dict[int, str], table_len: int
+) -> bytes:
+    values = [_INVALID_CP] * table_len
+    side_map: dict[int, str] = {}
+    for key, decoded in decode_map.items():
+        if key < 0 or key >= table_len:
+            raise RuntimeError(f"dense decode key out of range: key={key}, len={table_len}")
+        if len(decoded) == 1:
+            values[key] = ord(decoded)
+        else:
+            values[key] = _MULTI_CP
+            side_map[key] = decoded
+    return _pack_dense_decode_values(values, side_map)
+
+
+def _pack_row_compressed_double_decode_map(decode_map: dict[int, str]) -> bytes:
+    """Pack 2-byte decode map into row-compressed O(1) lookup layout.
+
+    Layout (little endian):
+    - u16 active_row_count
+    - u8[256] lead_to_row_index (0xFF => absent)
+    - u32[active_row_count * 256] values
+    - u32 side_count
+    - repeated side_count:
+      - u16 key ((lead << 8) | trail)
+      - u16 utf8_len
+      - u8[utf8_len] utf8_bytes
+    """
+
+    rows: dict[int, list[int]] = {}
+    side_map: dict[int, str] = {}
+
+    for key, decoded in decode_map.items():
+        if key < 0 or key > 0xFFFF:
+            raise RuntimeError(f"double-byte key out of range: {key}")
+        lead = (key >> 8) & 0xFF
+        trail = key & 0xFF
+        row = rows.get(lead)
+        if row is None:
+            row = [_INVALID_CP] * 256
+            rows[lead] = row
+        if len(decoded) == 1:
+            row[trail] = ord(decoded)
+        else:
+            row[trail] = _MULTI_CP
+            side_map[key] = decoded
+
+    active_leads = sorted(rows)
+    if len(active_leads) > 256:
+        raise RuntimeError("row-compressed decode table exceeds 256 active rows")
+
+    lead_to_row = bytearray([0xFF] * 256)
+    for row_index, lead in enumerate(active_leads):
+        lead_to_row[lead] = row_index
+
+    blob = bytearray()
+    blob.extend(struct.pack("<H", len(active_leads)))
+    blob.extend(lead_to_row)
+    # Align following u32 array to 4-byte boundary.
+    blob.extend(struct.pack("<H", 0))
+    for lead in active_leads:
+        row = rows[lead]
+        for cp in row:
+            blob.extend(struct.pack("<I", cp))
+
+    blob.extend(struct.pack("<I", len(side_map)))
+    for key in sorted(side_map):
+        encoded = side_map[key].encode("utf-8")
+        blob.extend(struct.pack("<H", key))
+        blob.extend(struct.pack("<H", len(encoded)))
+        blob.extend(encoded)
+    return bytes(blob)
+
+
+def _pack_sparse_decode_map(decode_map: dict[int, str]) -> bytes:
+    keys = sorted(decode_map)
+    cps: list[int] = []
+    side_map: dict[int, str] = {}
+    for key in keys:
+        decoded = decode_map[key]
+        if len(decoded) == 1:
+            cps.append(ord(decoded))
+        else:
+            cps.append(_MULTI_CP)
+            side_map[key] = decoded
+
+    blob = bytearray()
+    blob.extend(struct.pack("<I", len(keys)))
+    for key in keys:
+        blob.extend(struct.pack("<I", key))
+    for cp in cps:
+        blob.extend(struct.pack("<I", cp))
+    blob.extend(struct.pack("<I", len(side_map)))
+    for key in sorted(side_map):
+        encoded = side_map[key].encode("utf-8")
+        blob.extend(struct.pack("<I", key))
+        blob.extend(struct.pack("<H", len(encoded)))
+        blob.extend(encoded)
+    return bytes(blob)
+
+
+def _pack_sequence(seq: list[int]) -> int:
+    if not seq or len(seq) > 3:
+        raise RuntimeError(f"unsupported encode sequence length: seq={seq}")
+    b1 = seq[0]
+    b2 = seq[1] if len(seq) >= 2 else 0
+    b3 = seq[2] if len(seq) >= 3 else 0
+    return (len(seq) << 24) | (b1 << 16) | (b2 << 8) | b3
+
+
+def _pack_paged_encode_map(encode_map: dict[int, list[int]]) -> bytes:
+    page_directory = [0] * 256
+    page_index_by_values: dict[tuple[int, ...], int] = {}
+    pages: list[tuple[int, ...]] = []
+    supplementary_keys: list[int] = []
+    supplementary_values: list[int] = []
+
+    bmp_pages: dict[int, list[int]] = {}
+    # native 运行时使用二分查找读取 supplementary_keys，打包时必须按码点严格排序。
+    for cp, seq in sorted(encode_map.items()):
+        packed = _pack_sequence(seq)
+        if cp <= 0xFFFF:
+            page_id = cp >> 8
+            page = bmp_pages.get(page_id)
+            if page is None:
+                page = [0] * 256
+                bmp_pages[page_id] = page
+            page[cp & 0xFF] = packed
+            continue
+        supplementary_keys.append(cp)
+        supplementary_values.append(packed)
+
+    for page_id, page_values in bmp_pages.items():
+        page_tuple = tuple(page_values)
+        index = page_index_by_values.get(page_tuple)
+        if index is None:
+            index = len(pages)
+            page_index_by_values[page_tuple] = index
+            pages.append(page_tuple)
+        page_directory[page_id] = index + 1
+
+    blob = bytearray()
+    for entry in page_directory:
+        blob.extend(struct.pack("<H", entry))
+    blob.extend(struct.pack("<I", len(pages)))
+    for page in pages:
+        for packed in page:
+            blob.extend(struct.pack("<I", packed))
+    blob.extend(struct.pack("<I", len(supplementary_keys)))
+    for cp in supplementary_keys:
+        blob.extend(struct.pack("<I", cp))
+    for packed in supplementary_values:
+        blob.extend(struct.pack("<I", packed))
+    return bytes(blob)
+
+
+def _pack_single_byte_encode_map(encode_map: dict[int, int]) -> bytes:
+    as_lists = {cp: [b] for cp, b in encode_map.items()}
+    return _pack_paged_encode_map(as_lists)
+
+
+def _pair_key_to_94_index(key: int) -> int:
+    b1 = (key >> 8) & 0xFF
+    b2 = key & 0xFF
+    if b1 < 0x21 or b1 > 0x7E or b2 < 0x21 or b2 > 0x7E:
+        raise RuntimeError(f"pair key out of 94x94 range: {key}")
+    return (b1 - 0x21) * 94 + (b2 - 0x21)
+
+
+def _pack_94_decode_map(decode_map: dict[int, str]) -> bytes:
+    values = [_INVALID_CP] * (94 * 94)
+    side_map: dict[int, str] = {}
+    for key, decoded in decode_map.items():
+        index = _pair_key_to_94_index(key)
+        if len(decoded) == 1:
+            values[index] = ord(decoded)
+        else:
+            values[index] = _MULTI_CP
+            side_map[index] = decoded
+    return _pack_dense_decode_values(values, side_map)
+
+
+def _pack_gb18030_range_blob(ranges: list[tuple[int, int, int]]) -> bytes:
+    blob = bytearray()
+    blob.extend(struct.pack("<I", len(ranges)))
+    for first, last, base in ranges:
+        blob.extend(struct.pack("<III", first, last, base))
+    return bytes(blob)
+
+
+def _b85(payload: bytes) -> str:
+    header = struct.pack("<I", len(payload))
+    framed = header + payload
+    padding = (-len(framed)) % 4
+    if padding:
+        framed += b"\x00" * padding
+    return base64.b85encode(framed).decode("ascii")
+
+
+def _register_blob_symbol(
+    payload: bytes,
+    symbol_prefix: str,
+    symbol_by_hash: dict[str, str],
+    payload_by_symbol: dict[str, str],
+) -> str:
+    digest = _sha256_bytes(payload)
+    symbol = symbol_by_hash.get(digest)
+    if symbol is not None:
+        return symbol
+    symbol = f"_{symbol_prefix}_{len(symbol_by_hash)}"
+    symbol_by_hash[digest] = symbol
+    payload_by_symbol[symbol] = _b85(payload)
+    return symbol
+
+
+def _append_base85_string_constant(
+    lines: list[str], symbol: str, encoded: str
+) -> None:
+    chunks = _split_chunks(encoded)
+    if not chunks:
+        lines.append(f"const String {symbol} = \"\";")
+        return
+    lines.append(f"const String {symbol} =")
+    for i, chunk in enumerate(chunks):
+        suffix = ";" if i == len(chunks) - 1 else ""
+        lines.append(f"    {_dart_string(chunk)}{suffix}")
+
+
+def _append_blob_constants(
+    lines: list[str], payload_by_symbol: dict[str, str]
+) -> None:
+    for symbol, encoded in payload_by_symbol.items():
+        _append_base85_string_constant(lines, symbol, encoded)
+        lines.append("")
+
+
+def _append_blob_lookup_function(
+    lines: list[str],
+    *,
+    function_name: str,
+    parameter_name: str,
+    payloads: dict[str, bytes],
+    symbol_by_hash: dict[str, str],
+) -> None:
+    grouped: dict[str, list[str]] = {}
+    for key in sorted(payloads):
+        digest = _sha256_bytes(payloads[key])
+        symbol = symbol_by_hash[digest]
+        grouped.setdefault(symbol, []).append(key)
+
+    lines.append(f"String? {function_name}(String {parameter_name}) {{")
+    lines.append(f"  switch ({parameter_name}) {{")
+    for symbol in sorted(grouped):
+        for key in grouped[symbol]:
+            lines.append(f"    case {_dart_string(key)}:")
+        lines.append(f"      return {symbol};")
+    lines.append("    default:")
+    lines.append("      return null;")
+    lines.append("  }")
+    lines.append("}")
+
+
+def _python_canonical_name(name: str) -> str:
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return name.lower().replace("-", "_")
+
+
+def _python_codec_module_aliases(name: str) -> set[str]:
+    try:
+        info = codecs.lookup(name)
+    except LookupError:
+        return set()
+
+    aliases: set[str] = set()
+    members = (
+        info.encode,
+        info.decode,
+        info.incrementalencoder,
+        info.incrementaldecoder,
+        info.streamreader,
+        info.streamwriter,
+    )
+    for member in members:
+        module_obj = getattr(member, "__module__", None)
+        if not isinstance(module_obj, str):
+            continue
+        module = module_obj.strip().lower()
+        if not module.startswith("encodings."):
+            continue
+        alias = module.split(".")[-1].strip().lower()
+        if alias:
+            aliases.add(alias)
+    return aliases
+
+
+def _build_codec_alias_maps(
+    entries,
+    cpython_aliases: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    canonical_python_codec: dict[str, str] = {}
+    python_canonical_to_canonical: dict[str, list[str]] = {}
+    for e in entries:
+        canonical_name = e.name.lower()
+        python_canonical = _python_canonical_name(e.python_codec)
+        canonical_python_codec[canonical_name] = python_canonical
+        python_canonical_to_canonical.setdefault(python_canonical, []).append(
+            canonical_name
+        )
+
+    exact: dict[str, str] = {}
+    normalized: dict[str, str] = {}
+
+    for e in entries:
+        canonical = e.name.lower()
+        python_canonical = canonical_python_codec[canonical]
+        candidates = {canonical, e.python_codec.lower(), python_canonical}
+        candidates.update(_python_codec_module_aliases(e.python_codec))
+        for alias in candidates:
+            exact[alias] = canonical
+            normalized[_normalize_alias(alias)] = canonical
+
+    for alias, target in cpython_aliases.items():
+        python_canonical = _python_canonical_name(target)
+        targets = python_canonical_to_canonical.get(python_canonical)
+        if not targets:
+            continue
+        if len(targets) > 1:
+            raise RuntimeError(
+                f"Ambiguous python canonical {python_canonical!r} maps to multiple canonicals: {targets}"
+            )
+        canonical_name = targets[0]
+        alias_lower = alias.lower()
+        exact[alias_lower] = canonical_name
+        normalized[_normalize_alias(alias_lower)] = canonical_name
+
+    return exact, normalized
+
+
+def _build_codec_id_maps(entries) -> tuple[list[str], dict[str, int]]:
+    canonical_names = sorted(e.name.lower() for e in entries)
+    codec_id_by_name = {name: index for index, name in enumerate(canonical_names)}
+    return canonical_names, codec_id_by_name
+
+
+def _aggregate_payload(
+    blobs_by_key: dict[str, bytes],
+) -> tuple[bytes, list[str], list[int], list[int]]:
+    keys = sorted(blobs_by_key)
+    payload = bytearray()
+    offsets: list[int] = []
+    lengths: list[int] = []
+    for key in keys:
+        while len(payload) & 0x3:
+            payload.append(0)
+        blob = blobs_by_key[key]
+        offsets.append(len(payload))
+        lengths.append(len(blob))
+        payload.extend(blob)
+    return bytes(payload), keys, offsets, lengths
+
+
+def _write_codec_alias_data(
+    entries,
+    exact: dict[str, str],
+    normalized: dict[str, str],
+) -> None:
+    out = OUT_LIB / "codec_alias_data.g.dart"
+    canonical_names, codec_id_by_name = _build_codec_id_maps(entries)
+    lines = [
+        *GENERATED_SOURCE_HEADER,
+        "const List<String> generatedCanonicalNames = <String>[",
+    ]
+    lines.extend(f"  {_dart_string(name)}," for name in canonical_names)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<String> generatedCodecExactAliases = <String>[")
+    exact_keys = sorted(exact)
+    lines.extend(f"  {_dart_string(k)}," for k in exact_keys)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedCodecExactAliasCodecIds = <int>[")
+    lines.extend(f"  {codec_id_by_name[exact[k]]}," for k in exact_keys)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<String> generatedCodecNormalizedAliases = <String>[")
+    normalized_keys = sorted(normalized)
+    lines.extend(f"  {_dart_string(k)}," for k in normalized_keys)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedCodecNormalizedAliasCodecIds = <int>[")
+    lines.extend(f"  {codec_id_by_name[normalized[k]]}," for k in normalized_keys)
+    lines.append("];")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_codec_meta_data(entries) -> None:
+    out = OUT_LIB / "codec_meta_data.g.dart"
+    canonical_names, codec_id_by_name = _build_codec_id_maps(entries)
+    canonical_to_python = {
+        e.name.lower(): e.python_codec.lower() for e in entries
+    }
+    multibyte_names = {e.name.lower() for e in entries if e.is_multibyte}
+    lines = [
+        *GENERATED_SOURCE_HEADER,
+        "const List<String> generatedPythonCodecNames = <String>[",
+    ]
+    lines.extend(
+        f"  {_dart_string(canonical_to_python[name])}," for name in canonical_names
+    )
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedCodecFlags = <int>[")
+    for name in canonical_names:
+        flags = 0
+        if canonical_to_python[name].startswith("utf-") or name.startswith("utf-"):
+            flags |= 0x1
+        if name not in multibyte_names and not (flags & 0x1):
+            flags |= 0x2
+        if name in multibyte_names:
+            flags |= 0x4
+        lines.append(f"  {flags},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedCodecIdByCanonicalOrder = <int>[")
+    lines.extend(f"  {codec_id_by_name[name]}," for name in canonical_names)
+    lines.append("];")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_codec_sbcs_data(
+    entries,
+    decode_tables: dict[str, list[int]],
+    encode_tables: dict[str, dict[int, int]],
+) -> dict[str, bytes]:
+    out = OUT_LIB / "codec_sbcs_data.g.dart"
+    decode_blobs: dict[str, bytes] = {}
+    encode_blobs: dict[str, bytes] = {}
+    for name in sorted(decode_tables):
+        table = decode_tables[name]
+        if len(table) != 256:
+            raise RuntimeError(f"SBCS decode table must have 256 entries: codec={name}")
+        decode_blobs[name] = _pack_dense_decode_values(table)
+    for name in sorted(encode_tables):
+        encode_blobs[name] = _pack_single_byte_encode_map(encode_tables[name])
+
+    payloads: dict[str, bytes] = {}
+    for name, blob in decode_blobs.items():
+        payloads[f"decode:{name}"] = blob
+    for name, blob in encode_blobs.items():
+        payloads[f"encode:{name}"] = blob
+    payload, payload_keys, payload_offsets, payload_lengths = _aggregate_payload(payloads)
+    payload_key_to_offset = {
+        key: payload_offsets[index] for index, key in enumerate(payload_keys)
+    }
+    payload_key_to_length = {
+        key: payload_lengths[index] for index, key in enumerate(payload_keys)
+    }
+    canonical_names, codec_id_by_name = _build_codec_id_maps(entries)
+    sbcs_names = sorted(decode_tables)
+    family_index_by_codec_id = [-1] * len(canonical_names)
+    for family_index, name in enumerate(sbcs_names):
+        family_index_by_codec_id[codec_id_by_name[name]] = family_index
+
+    lines = [
+        *GENERATED_SOURCE_HEADER,
+        "// ignore_for_file: constant_identifier_names",
+        "",
+        "const List<String> generatedSbcsCanonicalNames = <String>[",
+    ]
+    lines.extend(f"  {_dart_string(name)}," for name in sbcs_names)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedSbcsFamilyIndexByCodecId = <int>[")
+    lines.extend(f"  {value}," for value in family_index_by_codec_id)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedSbcsDecodeOffsets = <int>[")
+    for name in sbcs_names:
+        lines.append(f"  {payload_key_to_offset[f'decode:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedSbcsDecodeLengths = <int>[")
+    for name in sbcs_names:
+        lines.append(f"  {payload_key_to_length[f'decode:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedSbcsEncodeOffsets = <int>[")
+    for name in sbcs_names:
+        lines.append(f"  {payload_key_to_offset[f'encode:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedSbcsEncodeLengths = <int>[")
+    for name in sbcs_names:
+        lines.append(f"  {payload_key_to_length[f'encode:{name}']},")
+    lines.append("];")
+    lines.append("")
+    _append_base85_string_constant(lines, "generatedSbcsPayloadBase85", _b85(payload))
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    blob_payloads: dict[str, bytes] = {}
+    blob_payloads["sbcs_payload"] = payload
+    return blob_payloads
+
+
+def _write_codec_utf_data(entries) -> None:
+    out = OUT_LIB / "codec_utf_data.g.dart"
+    utf_codecs = sorted(
+        {
+            e.name.lower()
+            for e in entries
+            if e.python_codec.lower().startswith("utf-") or e.name.lower().startswith("utf-")
+        }
+    )
+    lines = [
+        *GENERATED_SOURCE_HEADER,
+        "final Set<String> generatedUtfCodecs = <String>{",
+    ]
+    lines.extend(f"  {_dart_string(name)}," for name in utf_codecs)
+    lines.append("};")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_codec_mbcs_data(
+    entries,
+    single_tables: dict[str, list[int]],
+    double_decode_maps: dict[str, dict[int, str]],
+    triple_decode_maps: dict[str, dict[int, str]],
+    encode_maps: dict[str, dict[int, list[int]]],
+    implemented_table_codecs: list[str],
+    pending_codecs: list[str],
+    gb18030_double_decode_map: dict[int, str],
+    gb18030_double_encode_map: dict[int, list[int]],
+    gb18030_bmp_ranges: list[tuple[int, int, int]],
+    iso2022_decode_maps: dict[str, dict[int, str]],
+    iso2022_encode_maps: dict[str, dict[int, list[int]]],
+    iso2022_width_map: dict[str, int],
+    iso2022_mode_map: dict[str, str],
+    hz_decode_map: dict[int, str],
+    hz_encode_map: dict[int, list[int]],
+    iso2022kr_decode_map: dict[int, str],
+    iso2022kr_encode_map: dict[int, list[int]],
+) -> dict[str, bytes]:
+    out = OUT_LIB / "codec_mbcs_data.g.dart"
+    canonical_names, codec_id_by_name = _build_codec_id_maps(entries)
+    mbcs = sorted({e.name.lower() for e in entries if e.is_multibyte})
+    table_codec_names = sorted(implemented_table_codecs)
+
+    sample_scalar_by_codec: dict[str, int] = {}
+    sample_bytes_by_codec: dict[str, list[int]] = {}
+    for name in sorted(encode_maps):
+        for cp in sorted(encode_maps[name]):
+            encoded = encode_maps[name][cp]
+            if len(encoded) > 1:
+                sample_scalar_by_codec[name] = cp
+                sample_bytes_by_codec[name] = encoded
+                break
+
+    mbcs_single_blobs: dict[str, bytes] = {}
+    for name in table_codec_names:
+        table = single_tables[name]
+        if len(table) != 256:
+            raise RuntimeError(
+                f"MBCS single-byte decode table must have 256 entries: codec={name}"
+            )
+        mbcs_single_blobs[name] = _pack_dense_decode_values(table)
+
+    mbcs_double_blobs = {
+        name: _pack_row_compressed_double_decode_map(double_decode_maps[name])
+        for name in table_codec_names
+    }
+    mbcs_triple_blobs = {
+        name: _pack_sparse_decode_map(triple_decode_maps[name]) for name in table_codec_names
+    }
+    mbcs_encode_blobs = {
+        name: _pack_paged_encode_map(encode_maps[name]) for name in table_codec_names
+    }
+
+    table_payloads: dict[str, bytes] = {}
+    for name in table_codec_names:
+        table_payloads[f"single:{name}"] = mbcs_single_blobs[name]
+        table_payloads[f"double:{name}"] = mbcs_double_blobs[name]
+        table_payloads[f"triple:{name}"] = mbcs_triple_blobs[name]
+        table_payloads[f"encode:{name}"] = mbcs_encode_blobs[name]
+    table_payload, table_keys, table_offsets, table_lengths = _aggregate_payload(
+        table_payloads
+    )
+    table_key_to_offset = {
+        key: table_offsets[index] for index, key in enumerate(table_keys)
+    }
+    table_key_to_length = {
+        key: table_lengths[index] for index, key in enumerate(table_keys)
+    }
+
+    gb18030_double_decode_blob = _pack_dense_decode_map(gb18030_double_decode_map, 65536)
+    gb18030_double_encode_blob = _pack_paged_encode_map(gb18030_double_encode_map)
+
+    iso2022_decode_blobs: dict[str, bytes] = {}
+    for set_id in sorted(iso2022_decode_maps):
+        width = iso2022_width_map[set_id]
+        if width == 1:
+            iso2022_decode_blobs[set_id] = _pack_dense_decode_map(
+                iso2022_decode_maps[set_id], 128
+            )
+        elif width == 2:
+            indexed_map = {
+                _pair_key_to_94_index(key): decoded
+                for key, decoded in iso2022_decode_maps[set_id].items()
+            }
+            iso2022_decode_blobs[set_id] = _pack_dense_decode_map(indexed_map, 94 * 94)
+        else:
+            raise RuntimeError(f"unsupported iso2022 width: set={set_id}, width={width}")
+
+    iso2022_encode_blobs = {
+        set_id: _pack_paged_encode_map(iso2022_encode_maps[set_id])
+        for set_id in sorted(iso2022_encode_maps)
+    }
+
+    hz_decode_blob = _pack_94_decode_map(hz_decode_map)
+    hz_encode_blob = _pack_paged_encode_map(hz_encode_map)
+    iso2022kr_decode_blob = _pack_94_decode_map(iso2022kr_decode_map)
+    iso2022kr_encode_blob = _pack_paged_encode_map(iso2022kr_encode_map)
+
+    stateful_payloads: dict[str, bytes] = {
+        "gb18030:decode": gb18030_double_decode_blob,
+        "gb18030:encode": gb18030_double_encode_blob,
+        "hz:decode": hz_decode_blob,
+        "hz:encode": hz_encode_blob,
+        "iso2022kr:decode": iso2022kr_decode_blob,
+        "iso2022kr:encode": iso2022kr_encode_blob,
+    }
+    for set_id in sorted(iso2022_decode_blobs):
+        stateful_payloads[f"iso2022:{set_id}:decode"] = iso2022_decode_blobs[set_id]
+    for set_id in sorted(iso2022_encode_blobs):
+        stateful_payloads[f"iso2022:{set_id}:encode"] = iso2022_encode_blobs[set_id]
+    stateful_payload, stateful_keys, stateful_offsets, stateful_lengths = _aggregate_payload(
+        stateful_payloads
+    )
+    stateful_key_to_offset = {
+        key: stateful_offsets[index] for index, key in enumerate(stateful_keys)
+    }
+    stateful_key_to_length = {
+        key: stateful_lengths[index] for index, key in enumerate(stateful_keys)
+    }
+
+    table_family_index_by_codec_id = [-1] * len(canonical_names)
+    stateful_family_index_by_codec_id = [-1] * len(canonical_names)
+    max_sequence_length_by_codec_id = [0] * len(canonical_names)
+    sample_scalar_by_codec_id = [-1] * len(canonical_names)
+    sample_bytes_by_codec_id: list[list[int]] = [[] for _ in canonical_names]
+    for family_index, name in enumerate(table_codec_names):
+        codec_id = codec_id_by_name[name]
+        table_family_index_by_codec_id[codec_id] = family_index
+        max_sequence_length_by_codec_id[codec_id] = int(
+            MBCS_TABLE_CODEC_CONFIG[name]["max_len"]
+        )
+        if name in sample_scalar_by_codec:
+            sample_scalar_by_codec_id[codec_id] = sample_scalar_by_codec[name]
+            sample_bytes_by_codec_id[codec_id] = sample_bytes_by_codec[name]
+    for family_index, name in enumerate(sorted(MBCS_STATEFUL_CODEC_NAMES)):
+        stateful_family_index_by_codec_id[codec_id_by_name[name]] = family_index
+
+    lines = [
+        *GENERATED_SOURCE_HEADER,
+        "// ignore_for_file: constant_identifier_names",
+        "// dart format off",
+        "",
+        "const List<String> generatedMultibyteCanonicalNames = <String>[",
+    ]
+    lines.extend(f"  {_dart_string(name)}," for name in mbcs)
+    lines.append("];")
+    lines.append("")
+    lines.append("final Set<String> generatedMultibyteCodecs = <String>{")
+    lines.extend(f"  {_dart_string(name)}," for name in mbcs)
+    lines.append("};")
+    lines.append("")
+    lines.append("const List<String> generatedMultibyteDecodeTableCanonicalNames = <String>[")
+    lines.extend(f"  {_dart_string(name)}," for name in table_codec_names)
+    lines.append("];")
+    lines.append("")
+    lines.append("final Set<String> generatedMultibyteDecodeTableCodecs = <String>{")
+    lines.extend(f"  {_dart_string(name)}," for name in table_codec_names)
+    lines.append("};")
+    lines.append("")
+    lines.append("const List<String> generatedMultibyteStatefulCanonicalNames = <String>[")
+    lines.extend(f"  {_dart_string(name)}," for name in sorted(MBCS_STATEFUL_CODEC_NAMES))
+    lines.append("];")
+    lines.append("")
+    lines.append("final Set<String> generatedMultibyteStatefulCodecs = <String>{")
+    lines.extend(f"  {_dart_string(name)}," for name in sorted(MBCS_STATEFUL_CODEC_NAMES))
+    lines.append("};")
+    lines.append("")
+    lines.append("final Set<String> generatedMultibytePendingCodecs = <String>{")
+    lines.extend(f"  {_dart_string(name)}," for name in sorted(pending_codecs))
+    lines.append("};")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsTableFamilyIndexByCodecId = <int>[")
+    lines.extend(f"  {value}," for value in table_family_index_by_codec_id)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsStatefulFamilyIndexByCodecId = <int>[")
+    lines.extend(f"  {value}," for value in stateful_family_index_by_codec_id)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsMaxSequenceLengthByCodecId = <int>[")
+    lines.extend(f"  {value}," for value in max_sequence_length_by_codec_id)
+    lines.append("];")
+    lines.append("")
+    lines.append("final Map<String, int> generatedMbcsMaxSequenceLength = <String, int>{")
+    for name in table_codec_names:
+        lines.append(
+            f"  {_dart_string(name)}: {int(MBCS_TABLE_CODEC_CONFIG[name]['max_len'])},"
+        )
+    lines.append("};")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsSampleMultibyteScalarByCodecId = <int>[")
+    lines.extend(f"  {value}," for value in sample_scalar_by_codec_id)
+    lines.append("];")
+    lines.append("")
+    lines.append(
+        "final Map<String, int> generatedMbcsSampleMultibyteScalarByCodec = <String, int>{"
+    )
+    for name in sorted(sample_scalar_by_codec):
+        lines.append(f"  {_dart_string(name)}: {sample_scalar_by_codec[name]},")
+    lines.append("};")
+    lines.append("")
+    lines.append(
+        "final List<List<int>> generatedMbcsSampleMultibyteBytesByCodecId = <List<int>>["
+    )
+    for sample in sample_bytes_by_codec_id:
+        sample_body = ", ".join(str(v) for v in sample)
+        lines.append(f"  <int>[{sample_body}],")
+    lines.append("];")
+    lines.append("")
+    lines.append(
+        "final Map<String, List<int>> generatedMbcsSampleMultibyteBytesByCodec = <String, List<int>>{"
+    )
+    for name in sorted(sample_bytes_by_codec):
+        sample_body = ", ".join(str(v) for v in sample_bytes_by_codec[name])
+        lines.append(f"  {_dart_string(name)}: <int>[{sample_body}],")
+    lines.append("};")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsSingleDecodeOffsets = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_offset[f'single:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsSingleDecodeLengths = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_length[f'single:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsDoubleDecodeOffsets = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_offset[f'double:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsDoubleDecodeLengths = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_length[f'double:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsTripleDecodeOffsets = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_offset[f'triple:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsTripleDecodeLengths = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_length[f'triple:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsEncodeOffsets = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_offset[f'encode:{name}']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedMbcsEncodeLengths = <int>[")
+    for name in table_codec_names:
+        lines.append(f"  {table_key_to_length[f'encode:{name}']},")
+    lines.append("];")
+    lines.append("")
+    _append_base85_string_constant(
+        lines, "generatedMbcsTablePayloadBase85", _b85(table_payload)
+    )
+    lines.append("")
+
+    lines.append(
+        f"const int generatedGb18030DoubleDecodeOffset = {stateful_key_to_offset['gb18030:decode']};"
+    )
+    lines.append(
+        f"const int generatedGb18030DoubleDecodeLength = {stateful_key_to_length['gb18030:decode']};"
+    )
+    lines.append(
+        f"const int generatedGb18030DoubleEncodeOffset = {stateful_key_to_offset['gb18030:encode']};"
+    )
+    lines.append(
+        f"const int generatedGb18030DoubleEncodeLength = {stateful_key_to_length['gb18030:encode']};"
+    )
+    lines.append("")
+
+    lines.append("final List<List<int>> generatedGb18030BmpRanges = <List<int>>[")
+    for first, last, base in gb18030_bmp_ranges:
+        lines.append(f"  <int>[{first}, {last}, {base}],")
+    lines.append("];")
+    lines.append("")
+
+    set_ids = sorted(iso2022_decode_blobs)
+    lines.append("const List<String> generatedIso2022SetIds = <String>[")
+    lines.extend(f"  {_dart_string(set_id)}," for set_id in set_ids)
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedIso2022SetDecodeOffsets = <int>[")
+    for set_id in set_ids:
+        lines.append(f"  {stateful_key_to_offset[f'iso2022:{set_id}:decode']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedIso2022SetDecodeLengths = <int>[")
+    for set_id in set_ids:
+        lines.append(f"  {stateful_key_to_length[f'iso2022:{set_id}:decode']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedIso2022SetEncodeOffsets = <int>[")
+    for set_id in set_ids:
+        lines.append(f"  {stateful_key_to_offset[f'iso2022:{set_id}:encode']},")
+    lines.append("];")
+    lines.append("")
+    lines.append("const List<int> generatedIso2022SetEncodeLengths = <int>[")
+    for set_id in set_ids:
+        lines.append(f"  {stateful_key_to_length[f'iso2022:{set_id}:encode']},")
+    lines.append("];")
+    lines.append("")
+
+    lines.append("final Map<String, int> generatedIso2022SetWidths = <String, int>{")
+    for set_id in sorted(iso2022_width_map):
+        lines.append(f"  {_dart_string(set_id)}: {iso2022_width_map[set_id]},")
+    lines.append("};")
+    lines.append("")
+    lines.append("final Map<String, String> generatedIso2022SetModes = <String, String>{")
+    for set_id in sorted(iso2022_mode_map):
+        lines.append(
+            f"  {_dart_string(set_id)}: {_dart_string(iso2022_mode_map[set_id])},"
+        )
+    lines.append("};")
+    lines.append("")
+    lines.append(
+        "final Map<String, List<int>> generatedIso2022SetDesignationEscapes = <String, List<int>>{"
+    )
+    for set_id in sorted(ISO2022_SET_DEFINITIONS):
+        esc = ISO2022_SET_DEFINITIONS[set_id]["designate"]
+        esc_bytes = ", ".join(str(v) for v in bytes(esc))
+        lines.append(f"  {_dart_string(set_id)}: <int>[{esc_bytes}],")
+    lines.append("};")
+    lines.append("")
+    lines.append(
+        "final Map<String, List<String>> generatedIso2022CodecSetOrder = <String, List<String>>{"
+    )
+    for canonical in sorted(ISO2022_CODEC_SET_ORDER):
+        sets_body = ", ".join(_dart_string(v) for v in ISO2022_CODEC_SET_ORDER[canonical])
+        lines.append(f"  {_dart_string(canonical)}: <String>[{sets_body}],")
+    lines.append("};")
+    lines.append("")
+
+    lines.append(
+        f"const int generatedHzDecodeOffset = {stateful_key_to_offset['hz:decode']};"
+    )
+    lines.append(
+        f"const int generatedHzDecodeLength = {stateful_key_to_length['hz:decode']};"
+    )
+    lines.append(
+        f"const int generatedHzEncodeOffset = {stateful_key_to_offset['hz:encode']};"
+    )
+    lines.append(
+        f"const int generatedHzEncodeLength = {stateful_key_to_length['hz:encode']};"
+    )
+    lines.append("")
+    lines.append(
+        f"const int generatedIso2022KrDecodeOffset = {stateful_key_to_offset['iso2022kr:decode']};"
+    )
+    lines.append(
+        f"const int generatedIso2022KrDecodeLength = {stateful_key_to_length['iso2022kr:decode']};"
+    )
+    lines.append(
+        f"const int generatedIso2022KrEncodeOffset = {stateful_key_to_offset['iso2022kr:encode']};"
+    )
+    lines.append(
+        f"const int generatedIso2022KrEncodeLength = {stateful_key_to_length['iso2022kr:encode']};"
+    )
+    lines.append("")
+    _append_base85_string_constant(
+        lines, "generatedStatefulMbcsPayloadBase85", _b85(stateful_payload)
+    )
+    lines.extend(["", "// dart format on"])
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return {
+        "mbcs_table_payload": table_payload,
+        "mbcs_stateful_payload": stateful_payload,
+    }
+
+
+def _write_native_assets(
+    entries,
+    sbcs_decode_tables: dict[str, list[int]],
+    sbcs_encode_tables: dict[str, dict[int, int]],
+    mbcs_single_tables: dict[str, list[int]],
+    mbcs_double_decode_maps: dict[str, dict[int, str]],
+    mbcs_triple_decode_maps: dict[str, dict[int, str]],
+    mbcs_encode_maps: dict[str, dict[int, list[int]]],
+    gb18030_double_decode_map: dict[int, str],
+    gb18030_double_encode_map: dict[int, list[int]],
+    gb18030_bmp_ranges: list[tuple[int, int, int]],
+    iso2022_decode_maps: dict[str, dict[int, str]],
+    iso2022_encode_maps: dict[str, dict[int, list[int]]],
+    iso2022_width_map: dict[str, int],
+    iso2022_mode_map: dict[str, str],
+    hz_decode_map: dict[int, str],
+    hz_encode_map: dict[int, list[int]],
+    iso2022kr_decode_map: dict[int, str],
+    iso2022kr_encode_map: dict[int, list[int]],
+) -> None:
+    OUT_NATIVE_ASSETS.mkdir(parents=True, exist_ok=True)
+    OUT_NATIVE_HOT.mkdir(parents=True, exist_ok=True)
+    OUT_NATIVE_RUST.mkdir(parents=True, exist_ok=True)
+
+    canonical_names, codec_id_by_name = _build_codec_id_maps(entries)
+    canonical_to_python = {
+        e.name.lower(): e.python_codec.lower() for e in entries
+    }
+
+    sbcs_names = sorted(sbcs_decode_tables)
+    sbcs_payloads: dict[str, bytes] = {}
+    for name in sbcs_names:
+        sbcs_payloads[f"decode:{name}"] = _pack_dense_decode_values(
+            sbcs_decode_tables[name]
+        )
+        sbcs_payloads[f"encode:{name}"] = _pack_single_byte_encode_map(
+            sbcs_encode_tables[name]
+        )
+    sbcs_payload, sbcs_keys, sbcs_offsets, sbcs_lengths = _aggregate_payload(
+        sbcs_payloads
+    )
+    sbcs_key_to_offset = {
+        key: sbcs_offsets[index] for index, key in enumerate(sbcs_keys)
+    }
+    sbcs_key_to_length = {
+        key: sbcs_lengths[index] for index, key in enumerate(sbcs_keys)
+    }
+    sbcs_path = OUT_NATIVE_ASSETS / "sbcs_tables.bin"
+    sbcs_path.write_bytes(sbcs_payload)
+
+    hot_manifests: dict[str, object] = {}
+    for name in sorted(NATIVE_HOT_TABLE_CODECS):
+        if name not in mbcs_single_tables:
+            continue
+        payloads = {
+            "single": _pack_dense_decode_values(mbcs_single_tables[name]),
+            "double": _pack_row_compressed_double_decode_map(
+                mbcs_double_decode_maps[name]
+            ),
+            "triple": _pack_sparse_decode_map(mbcs_triple_decode_maps[name]),
+            "encode": _pack_paged_encode_map(mbcs_encode_maps[name]),
+        }
+        payload, keys, offsets, lengths = _aggregate_payload(payloads)
+        file_name = f"{_native_file_codec_name(name)}.bin"
+        rel_path = Path("mbcs_hot") / file_name
+        (OUT_NATIVE_ASSETS / rel_path).write_bytes(payload)
+        hot_manifests[name] = {
+            "file": str(rel_path).replace("\\", "/"),
+            "offsets": {
+                keys[index]: offsets[index] for index in range(len(keys))
+            },
+            "lengths": {
+                keys[index]: lengths[index] for index in range(len(keys))
+            },
+        }
+
+    cold_names = sorted(
+        name for name in sorted(mbcs_single_tables) if name not in NATIVE_HOT_TABLE_CODECS
+    )
+    cold_payloads: dict[str, bytes] = {}
+    for name in cold_names:
+        cold_payloads[f"single:{name}"] = _pack_dense_decode_values(
+            mbcs_single_tables[name]
+        )
+        cold_payloads[f"double:{name}"] = _pack_row_compressed_double_decode_map(
+            mbcs_double_decode_maps[name]
+        )
+        cold_payloads[f"triple:{name}"] = _pack_sparse_decode_map(
+            mbcs_triple_decode_maps[name]
+        )
+        cold_payloads[f"encode:{name}"] = _pack_paged_encode_map(
+            mbcs_encode_maps[name]
+        )
+    cold_payload, cold_keys, cold_offsets, cold_lengths = _aggregate_payload(
+        cold_payloads
+    )
+    cold_path = OUT_NATIVE_ASSETS / "mbcs_cold.bin"
+    cold_path.write_bytes(cold_payload)
+
+    gb18030_payloads = {
+        "decode": _pack_dense_decode_map(gb18030_double_decode_map, 65536),
+        "encode": _pack_paged_encode_map(gb18030_double_encode_map),
+        "ranges": _pack_gb18030_range_blob(gb18030_bmp_ranges),
+    }
+    gb18030_payload, gb18030_keys, gb18030_offsets, gb18030_lengths = _aggregate_payload(
+        gb18030_payloads
+    )
+    gb18030_offset_by_key = {
+        gb18030_keys[index]: gb18030_offsets[index] for index in range(len(gb18030_keys))
+    }
+    gb18030_length_by_key = {
+        gb18030_keys[index]: gb18030_lengths[index] for index in range(len(gb18030_keys))
+    }
+    gb18030_hot_path = OUT_NATIVE_HOT / "gb18030.bin"
+    gb18030_hot_path.write_bytes(gb18030_payload)
+
+    stateful_payloads: dict[str, bytes] = {
+        "hz:decode": _pack_94_decode_map(hz_decode_map),
+        "hz:encode": _pack_paged_encode_map(hz_encode_map),
+        "iso2022kr:decode": _pack_94_decode_map(iso2022kr_decode_map),
+        "iso2022kr:encode": _pack_paged_encode_map(iso2022kr_encode_map),
+    }
+    for set_id in sorted(iso2022_decode_maps):
+        width = iso2022_width_map[set_id]
+        if width == 1:
+            stateful_payloads[f"iso2022:{set_id}:decode"] = _pack_dense_decode_map(
+                iso2022_decode_maps[set_id],
+                128,
+            )
+        else:
+            indexed_map = {
+                _pair_key_to_94_index(key): decoded
+                for key, decoded in iso2022_decode_maps[set_id].items()
+            }
+            stateful_payloads[f"iso2022:{set_id}:decode"] = _pack_dense_decode_map(
+                indexed_map,
+                94 * 94,
+            )
+        stateful_payloads[f"iso2022:{set_id}:encode"] = _pack_paged_encode_map(
+            iso2022_encode_maps[set_id]
+        )
+    stateful_payload, stateful_keys, stateful_offsets, stateful_lengths = (
+        _aggregate_payload(stateful_payloads)
+    )
+    stateful_offset_by_key = {
+        key: stateful_offsets[index] for index, key in enumerate(stateful_keys)
+    }
+    stateful_length_by_key = {
+        key: stateful_lengths[index] for index, key in enumerate(stateful_keys)
+    }
+    stateful_path = OUT_NATIVE_ASSETS / "stateful.bin"
+    stateful_path.write_bytes(stateful_payload)
+
+    hot_mbcs_names = [
+        name for name in sorted(NATIVE_HOT_TABLE_CODECS) if name in hot_manifests
+    ]
+    iso2022_set_ids = sorted(iso2022_decode_maps)
+    iso2022_set_index_by_name = {
+        set_id: index for index, set_id in enumerate(iso2022_set_ids)
+    }
+    native_iso2022_jp_names = [
+        name
+        for name in [
+            "iso-2022-jp",
+            "iso2022-jp-1",
+            "iso2022-jp-2",
+            "iso2022-jp-2004",
+            "iso2022-jp-3",
+            "iso2022-jp-ext",
+        ]
+        if name in canonical_names
+    ]
+    native_stateful_names = [
+        name
+        for name in ["hz-gb-2312", "iso-2022-kr", *native_iso2022_jp_names]
+        if name in canonical_names
+    ]
+    native_stateful_family_index_by_codec_id = [-1] * len(canonical_names)
+    for family_index, name in enumerate(native_stateful_names):
+        native_stateful_family_index_by_codec_id[codec_id_by_name[name]] = family_index
+    native_iso2022_jp_family_index_by_codec_id = [-1] * len(canonical_names)
+    for family_index, name in enumerate(native_iso2022_jp_names):
+        native_iso2022_jp_family_index_by_codec_id[codec_id_by_name[name]] = family_index
+    iso2022_codec_order_offsets: list[int] = []
+    iso2022_codec_order_lengths: list[int] = []
+    iso2022_codec_order_values: list[int] = []
+    for name in native_iso2022_jp_names:
+        order = ISO2022_CODEC_SET_ORDER[name]
+        iso2022_codec_order_offsets.append(len(iso2022_codec_order_values))
+        iso2022_codec_order_lengths.append(len(order))
+        iso2022_codec_order_values.extend(
+            iso2022_set_index_by_name[set_id] for set_id in order
+        )
+    native_supported_set = (
+        set(sbcs_names)
+        | set(hot_mbcs_names)
+        | set(cold_names)
+        | {"gb18030"}
+        | set(native_stateful_names)
+        | {
+            name
+            for name in canonical_names
+            if canonical_to_python[name].startswith("utf-") or name.startswith("utf-")
+        }
+    )
+    missing_native_canonicals = sorted(set(canonical_names) - native_supported_set)
+    if missing_native_canonicals:
+        raise RuntimeError(
+            "native codec matrix is incomplete: "
+            + ", ".join(missing_native_canonicals)
+        )
+    native_supported_canonicals = list(canonical_names)
+    native_supported_by_codec_id = [
+        name in native_supported_set for name in canonical_names
+    ]
+
+    native_matrix_lines = [
+        *GENERATED_SOURCE_HEADER,
+        "const List<bool> generatedNativeCodecSupportedById = <bool>[",
+    ]
+    native_matrix_lines.extend(
+        f"  {'true' if supported else 'false'},"
+        for supported in native_supported_by_codec_id
+    )
+    native_matrix_lines.append("];")
+    (OUT_LIB / "native_codec_matrix.g.dart").write_text(
+        "\n".join(native_matrix_lines) + "\n",
+        encoding="utf-8",
+    )
+    file_infos = {
+        "sbcs_tables.bin": {
+            "size": len(sbcs_payload),
+            "sha256": _sha256_bytes(sbcs_payload),
+        },
+        "mbcs_cold.bin": {
+            "size": len(cold_payload),
+            "sha256": _sha256_bytes(cold_payload),
+        },
+        "mbcs_hot/gb18030.bin": {
+            "size": len(gb18030_payload),
+            "sha256": _sha256_bytes(gb18030_payload),
+        },
+        "stateful.bin": {
+            "size": len(stateful_payload),
+            "sha256": _sha256_bytes(stateful_payload),
+        },
+    }
+    for name in sorted(hot_manifests):
+        rel_path = str(hot_manifests[name]["file"])
+        payload = (OUT_NATIVE_ASSETS / rel_path).read_bytes()
+        file_infos[rel_path] = {
+            "size": len(payload),
+            "sha256": _sha256_bytes(payload),
+        }
+
+    build_validation_inputs = {
+        "tool/export_codec_data.py": {
+            "sha256": _sha256_text(ROOT / "tool" / "export_codec_data.py"),
+            "normalize_newlines": True,
+        },
+        "tool/vendor/codec_catalog.json": {
+            "sha256": _sha256_text(CODEC_CATALOG),
+            "normalize_newlines": True,
+        },
+        "tool/vendor/cpython_aliases.json": {
+            "sha256": _sha256_text(CPYTHON_ALIASES_SNAPSHOT),
+            "normalize_newlines": True,
+        },
+        "native/Cargo.toml": {
+            "sha256": _sha256_text(ROOT / "native" / "Cargo.toml"),
+            "normalize_newlines": True,
+        },
+        "native/rust-toolchain.toml": {
+            "sha256": _sha256_text(ROOT / "native" / "rust-toolchain.toml"),
+            "normalize_newlines": True,
+        },
+    }
+
+    sbcs_family_index_by_codec_id = [-1] * len(canonical_names)
+    for family_index, name in enumerate(sbcs_names):
+        sbcs_family_index_by_codec_id[codec_id_by_name[name]] = family_index
+    hot_mbcs_family_index_by_codec_id = [-1] * len(canonical_names)
+    hot_mbcs_max_sequence_length_by_family_index: list[int] = []
+    hot_mbcs_single_offsets: list[int] = []
+    hot_mbcs_single_lengths: list[int] = []
+    hot_mbcs_double_offsets: list[int] = []
+    hot_mbcs_double_lengths: list[int] = []
+    hot_mbcs_triple_offsets: list[int] = []
+    hot_mbcs_triple_lengths: list[int] = []
+    hot_mbcs_encode_offsets: list[int] = []
+    hot_mbcs_encode_lengths: list[int] = []
+    for family_index, name in enumerate(hot_mbcs_names):
+        hot_mbcs_family_index_by_codec_id[codec_id_by_name[name]] = family_index
+        hot_mbcs_max_sequence_length_by_family_index.append(
+            int(MBCS_TABLE_CODEC_CONFIG[name]["max_len"])
+        )
+        manifest_entry = hot_manifests[name]
+        offsets_map = manifest_entry["offsets"]
+        lengths_map = manifest_entry["lengths"]
+        hot_mbcs_single_offsets.append(offsets_map["single"])
+        hot_mbcs_single_lengths.append(lengths_map["single"])
+        hot_mbcs_double_offsets.append(offsets_map["double"])
+        hot_mbcs_double_lengths.append(lengths_map["double"])
+        hot_mbcs_triple_offsets.append(offsets_map["triple"])
+        hot_mbcs_triple_lengths.append(lengths_map["triple"])
+        hot_mbcs_encode_offsets.append(offsets_map["encode"])
+        hot_mbcs_encode_lengths.append(lengths_map["encode"])
+    cold_mbcs_family_index_by_codec_id = [-1] * len(canonical_names)
+    cold_mbcs_max_sequence_length_by_family_index: list[int] = []
+    cold_mbcs_single_offsets: list[int] = []
+    cold_mbcs_single_lengths: list[int] = []
+    cold_mbcs_double_offsets: list[int] = []
+    cold_mbcs_double_lengths: list[int] = []
+    cold_mbcs_triple_offsets: list[int] = []
+    cold_mbcs_triple_lengths: list[int] = []
+    cold_mbcs_encode_offsets: list[int] = []
+    cold_mbcs_encode_lengths: list[int] = []
+    cold_key_to_offset = {
+        key: cold_offsets[index] for index, key in enumerate(cold_keys)
+    }
+    cold_key_to_length = {
+        key: cold_lengths[index] for index, key in enumerate(cold_keys)
+    }
+    for family_index, name in enumerate(cold_names):
+        cold_mbcs_family_index_by_codec_id[codec_id_by_name[name]] = family_index
+        cold_mbcs_max_sequence_length_by_family_index.append(
+            int(MBCS_TABLE_CODEC_CONFIG[name]["max_len"])
+        )
+        cold_mbcs_single_offsets.append(cold_key_to_offset[f"single:{name}"])
+        cold_mbcs_single_lengths.append(cold_key_to_length[f"single:{name}"])
+        cold_mbcs_double_offsets.append(cold_key_to_offset[f"double:{name}"])
+        cold_mbcs_double_lengths.append(cold_key_to_length[f"double:{name}"])
+        cold_mbcs_triple_offsets.append(cold_key_to_offset[f"triple:{name}"])
+        cold_mbcs_triple_lengths.append(cold_key_to_length[f"triple:{name}"])
+        cold_mbcs_encode_offsets.append(cold_key_to_offset[f"encode:{name}"])
+        cold_mbcs_encode_lengths.append(cold_key_to_length[f"encode:{name}"])
+
+    codec_index_lines = [
+        *GENERATED_SOURCE_HEADER,
+        f"pub const NATIVE_ABI_VERSION: u32 = {NATIVE_ABI_VERSION};",
+        "",
+        f"pub const CANONICAL_NAMES: [&str; {len(canonical_names)}] = [",
+    ]
+    codec_index_lines.extend(f"    {_rust_string(name)}," for name in canonical_names)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(f"pub const CODEC_FLAGS: [u8; {len(canonical_names)}] = [")
+    codec_index_lines.extend(
+        f"    {1 if canonical_to_python[name].startswith('utf-') else (4 if name in MBCS_STATEFUL_CODEC_NAMES or name in mbcs_single_tables else 2)}u8,"
+        for name in canonical_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const NATIVE_SUPPORTED_BY_CODEC_ID: [bool; {len(canonical_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {'true' if supported else 'false'},"
+        for supported in native_supported_by_codec_id
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(f"pub const SBCS_CANONICAL_NAMES: [&str; {len(sbcs_names)}] = [")
+    codec_index_lines.extend(f"    {_rust_string(name)}," for name in sbcs_names)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const SBCS_FAMILY_INDEX_BY_CODEC_ID: [i16; {len(canonical_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}," for value in sbcs_family_index_by_codec_id
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const SBCS_DECODE_OFFSETS: [u32; {len(sbcs_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {sbcs_key_to_offset[f'decode:{name}']}u32," for name in sbcs_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const SBCS_DECODE_LENGTHS: [u32; {len(sbcs_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {sbcs_key_to_length[f'decode:{name}']}u32," for name in sbcs_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const SBCS_ENCODE_OFFSETS: [u32; {len(sbcs_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {sbcs_key_to_offset[f'encode:{name}']}u32," for name in sbcs_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const SBCS_ENCODE_LENGTHS: [u32; {len(sbcs_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {sbcs_key_to_length[f'encode:{name}']}u32," for name in sbcs_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_CANONICAL_NAMES: [&str; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {_rust_string(name)}," for name in hot_mbcs_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_FAMILY_INDEX_BY_CODEC_ID: [i16; {len(canonical_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}," for value in hot_mbcs_family_index_by_codec_id
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_MAX_SEQUENCE_LENGTHS: [u8; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}u8," for value in hot_mbcs_max_sequence_length_by_family_index
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_SINGLE_OFFSETS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_single_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_SINGLE_LENGTHS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_single_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_DOUBLE_OFFSETS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_double_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_DOUBLE_LENGTHS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_double_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_TRIPLE_OFFSETS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_triple_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_TRIPLE_LENGTHS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_triple_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_ENCODE_OFFSETS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_encode_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_HOT_ENCODE_LENGTHS: [u32; {len(hot_mbcs_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in hot_mbcs_encode_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_CANONICAL_NAMES: [&str; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {_rust_string(name)}," for name in cold_names)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_FAMILY_INDEX_BY_CODEC_ID: [i16; {len(canonical_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}," for value in cold_mbcs_family_index_by_codec_id
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_MAX_SEQUENCE_LENGTHS: [u8; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}u8," for value in cold_mbcs_max_sequence_length_by_family_index
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_SINGLE_OFFSETS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_single_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_SINGLE_LENGTHS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_single_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_DOUBLE_OFFSETS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_double_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_DOUBLE_LENGTHS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_double_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_TRIPLE_OFFSETS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_triple_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_TRIPLE_LENGTHS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_triple_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_ENCODE_OFFSETS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_encode_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const MBCS_COLD_ENCODE_LENGTHS: [u32; {len(cold_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u32," for value in cold_mbcs_encode_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const STATEFUL_NATIVE_FAMILY_INDEX_BY_CODEC_ID: [i16; {len(canonical_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}," for value in native_stateful_family_index_by_codec_id
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_IDS: [&str; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(f"    {_rust_string(set_id)}," for set_id in iso2022_set_ids)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_DECODE_OFFSETS: [u32; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {stateful_offset_by_key[f'iso2022:{set_id}:decode']}u32,"
+        for set_id in iso2022_set_ids
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_DECODE_LENGTHS: [u32; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {stateful_length_by_key[f'iso2022:{set_id}:decode']}u32,"
+        for set_id in iso2022_set_ids
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_ENCODE_OFFSETS: [u32; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {stateful_offset_by_key[f'iso2022:{set_id}:encode']}u32,"
+        for set_id in iso2022_set_ids
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_ENCODE_LENGTHS: [u32; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {stateful_length_by_key[f'iso2022:{set_id}:encode']}u32,"
+        for set_id in iso2022_set_ids
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_WIDTHS: [u8; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {iso2022_width_map[set_id]}u8," for set_id in iso2022_set_ids
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_SET_IS_G2: [u8; {len(iso2022_set_ids)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {1 if iso2022_mode_map[set_id] == 'g2' else 0}u8,"
+        for set_id in iso2022_set_ids
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_JP_CANONICAL_NAMES: [&str; {len(native_iso2022_jp_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {_rust_string(name)}," for name in native_iso2022_jp_names
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_JP_FAMILY_INDEX_BY_CODEC_ID: [i16; {len(canonical_names)}] = ["
+    )
+    codec_index_lines.extend(
+        f"    {value}," for value in native_iso2022_jp_family_index_by_codec_id
+    )
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_JP_CODEC_SET_ORDER_OFFSETS: [u16; {len(native_iso2022_jp_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u16," for value in iso2022_codec_order_offsets)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_JP_CODEC_SET_ORDER_LENGTHS: [u8; {len(native_iso2022_jp_names)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u8," for value in iso2022_codec_order_lengths)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const ISO2022_JP_CODEC_SET_ORDER_VALUES: [u8; {len(iso2022_codec_order_values)}] = ["
+    )
+    codec_index_lines.extend(f"    {value}u8," for value in iso2022_codec_order_values)
+    codec_index_lines.append("];")
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const GB18030_DOUBLE_DECODE_OFFSET: u32 = {gb18030_offset_by_key['decode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const GB18030_DOUBLE_DECODE_LENGTH: u32 = {gb18030_length_by_key['decode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const GB18030_DOUBLE_ENCODE_OFFSET: u32 = {gb18030_offset_by_key['encode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const GB18030_DOUBLE_ENCODE_LENGTH: u32 = {gb18030_length_by_key['encode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const GB18030_RANGES_OFFSET: u32 = {gb18030_offset_by_key['ranges']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const GB18030_RANGES_LENGTH: u32 = {gb18030_length_by_key['ranges']}u32;"
+    )
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        f"pub const HZ_DECODE_OFFSET: u32 = {stateful_offset_by_key['hz:decode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const HZ_DECODE_LENGTH: u32 = {stateful_length_by_key['hz:decode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const HZ_ENCODE_OFFSET: u32 = {stateful_offset_by_key['hz:encode']}u32;"
+    )
+    codec_index_lines.append(
+        f"pub const HZ_ENCODE_LENGTH: u32 = {stateful_length_by_key['hz:encode']}u32;"
+    )
+    codec_index_lines.append("")
+    codec_index_lines.append(
+        "pub const ISO2022_KR_DECODE_OFFSET: u32 = "
+        f"{stateful_offset_by_key['iso2022kr:decode']}u32;"
+    )
+    codec_index_lines.append(
+        "pub const ISO2022_KR_DECODE_LENGTH: u32 = "
+        f"{stateful_length_by_key['iso2022kr:decode']}u32;"
+    )
+    codec_index_lines.append(
+        "pub const ISO2022_KR_ENCODE_OFFSET: u32 = "
+        f"{stateful_offset_by_key['iso2022kr:encode']}u32;"
+    )
+    codec_index_lines.append(
+        "pub const ISO2022_KR_ENCODE_LENGTH: u32 = "
+        f"{stateful_length_by_key['iso2022kr:encode']}u32;"
+    )
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn canonical_name(codec_id: u32) -> &'static str {")
+    codec_index_lines.append("    CANONICAL_NAMES[codec_id as usize]")
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn is_utf(codec_id: u32) -> bool {")
+    codec_index_lines.append(
+        "    CODEC_FLAGS.get(codec_id as usize).is_some_and(|flags| (flags & 0x1) != 0)"
+    )
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn native_supports(codec_id: u32) -> bool {")
+    codec_index_lines.append(
+        "    NATIVE_SUPPORTED_BY_CODEC_ID.get(codec_id as usize).copied().unwrap_or(false)"
+    )
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn sbcs_family_index(codec_id: u32) -> Option<usize> {")
+    codec_index_lines.append("    let value = SBCS_FAMILY_INDEX_BY_CODEC_ID[codec_id as usize];")
+    codec_index_lines.append("    if value < 0 {")
+    codec_index_lines.append("        None")
+    codec_index_lines.append("    } else {")
+    codec_index_lines.append("        Some(value as usize)")
+    codec_index_lines.append("    }")
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn mbcs_hot_family_index(codec_id: u32) -> Option<usize> {")
+    codec_index_lines.append("    let value = MBCS_HOT_FAMILY_INDEX_BY_CODEC_ID[codec_id as usize];")
+    codec_index_lines.append("    if value < 0 {")
+    codec_index_lines.append("        None")
+    codec_index_lines.append("    } else {")
+    codec_index_lines.append("        Some(value as usize)")
+    codec_index_lines.append("    }")
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn mbcs_cold_family_index(codec_id: u32) -> Option<usize> {")
+    codec_index_lines.append("    let value = MBCS_COLD_FAMILY_INDEX_BY_CODEC_ID[codec_id as usize];")
+    codec_index_lines.append("    if value < 0 {")
+    codec_index_lines.append("        None")
+    codec_index_lines.append("    } else {")
+    codec_index_lines.append("        Some(value as usize)")
+    codec_index_lines.append("    }")
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn stateful_native_family_index(codec_id: u32) -> Option<usize> {")
+    codec_index_lines.append(
+        "    let value = STATEFUL_NATIVE_FAMILY_INDEX_BY_CODEC_ID[codec_id as usize];"
+    )
+    codec_index_lines.append("    if value < 0 {")
+    codec_index_lines.append("        None")
+    codec_index_lines.append("    } else {")
+    codec_index_lines.append("        Some(value as usize)")
+    codec_index_lines.append("    }")
+    codec_index_lines.append("}")
+    codec_index_lines.append("")
+    codec_index_lines.append("pub fn iso2022_jp_family_index(codec_id: u32) -> Option<usize> {")
+    codec_index_lines.append(
+        "    let value = ISO2022_JP_FAMILY_INDEX_BY_CODEC_ID[codec_id as usize];"
+    )
+    codec_index_lines.append("    if value < 0 {")
+    codec_index_lines.append("        None")
+    codec_index_lines.append("    } else {")
+    codec_index_lines.append("        Some(value as usize)")
+    codec_index_lines.append("    }")
+    codec_index_lines.append("}")
+    (OUT_NATIVE_RUST / "codec_index.rs").write_text(
+        "\n".join(codec_index_lines) + "\n",
+        encoding="utf-8",
+    )
+
+    blob_lines = [
+        *GENERATED_SOURCE_HEADER,
+        'pub static SBCS_TABLES: &[u8] = include_bytes!("../assets/generated/sbcs_tables.bin");',
+        'pub static MBCS_COLD_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_cold.bin");',
+        'pub static MBCS_GB18030_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_hot/gb18030.bin");',
+        'pub static MBCS_STATEFUL_TABLES: &[u8] = include_bytes!("../assets/generated/stateful.bin");',
+    ]
+    for name in sorted(hot_manifests):
+        const_name = f"MBCS_HOT_{_native_file_codec_name(name).upper()}_TABLES"
+        rel_path = str(hot_manifests[name]["file"]).replace("\\", "/")
+        blob_lines.append(
+            f'pub static {const_name}: &[u8] = include_bytes!("../assets/generated/{rel_path}");'
+        )
+    (OUT_NATIVE_RUST / "blobs.rs").write_text(
+        "\n".join(blob_lines) + "\n",
+        encoding="utf-8",
+    )
+    (OUT_NATIVE_RUST / "mod.rs").write_text(
+        "\n".join(
+            [
+                *GENERATED_SOURCE_HEADER,
+                "pub mod blobs;",
+                "pub mod codec_index;",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rustfmt_version = _format_generated_rust(
+        [
+            OUT_NATIVE_RUST / "blobs.rs",
+            OUT_NATIVE_RUST / "codec_index.rs",
+            OUT_NATIVE_RUST / "mod.rs",
+        ]
+    )
+
+    build_validation_outputs = {
+        "native/generated/blobs.rs": {
+            "sha256": _sha256_text(OUT_NATIVE_RUST / "blobs.rs"),
+            "normalize_newlines": True,
+            "sha256_no_ascii_ws": _sha256_without_ascii_whitespace(
+                OUT_NATIVE_RUST / "blobs.rs"
+            ),
+        },
+        "native/generated/codec_index.rs": {
+            "sha256": _sha256_text(OUT_NATIVE_RUST / "codec_index.rs"),
+            "normalize_newlines": True,
+            "sha256_no_ascii_ws": _sha256_without_ascii_whitespace(
+                OUT_NATIVE_RUST / "codec_index.rs"
+            ),
+        },
+        "native/generated/mod.rs": {
+            "sha256": _sha256_text(OUT_NATIVE_RUST / "mod.rs"),
+            "normalize_newlines": True,
+            "sha256_no_ascii_ws": _sha256_without_ascii_whitespace(
+                OUT_NATIVE_RUST / "mod.rs"
+            ),
+        },
+    }
+    for rel_path, file_info in sorted(file_infos.items()):
+        build_validation_outputs[f"native/assets/generated/{rel_path}"] = {
+            "sha256": file_info["sha256"],
+        }
+
+    native_manifest = {
+        "native_abi_version": NATIVE_ABI_VERSION,
+        "rustfmt_version": rustfmt_version,
+        "canonical_count": len(canonical_names),
+        "native_supported_canonical_count": len(native_supported_canonicals),
+        "native_supported_canonical_names": native_supported_canonicals,
+        "build_validation": {
+            "generator_inputs": build_validation_inputs,
+            "required_outputs": build_validation_outputs,
+        },
+        "files": file_infos,
+        "sbcs": {
+            "canonical_names": sbcs_names,
+            "decode_offsets": [
+                sbcs_key_to_offset[f"decode:{name}"] for name in sbcs_names
+            ],
+            "decode_lengths": [
+                sbcs_key_to_length[f"decode:{name}"] for name in sbcs_names
+            ],
+            "encode_offsets": [
+                sbcs_key_to_offset[f"encode:{name}"] for name in sbcs_names
+            ],
+            "encode_lengths": [
+                sbcs_key_to_length[f"encode:{name}"] for name in sbcs_names
+            ],
+        },
+        "mbcs_hot": {
+            **hot_manifests,
+            "gb18030": {
+                "file": "mbcs_hot/gb18030.bin",
+                "offsets": {
+                    gb18030_keys[index]: gb18030_offsets[index]
+                    for index in range(len(gb18030_keys))
+                },
+                "lengths": {
+                    gb18030_keys[index]: gb18030_lengths[index]
+                    for index in range(len(gb18030_keys))
+                },
+            },
+        },
+        "mbcs_cold": {
+            "file": "mbcs_cold.bin",
+            "keys": cold_keys,
+            "offsets": cold_offsets,
+            "lengths": cold_lengths,
+        },
+        "stateful": {
+            "file": "stateful.bin",
+            "keys": stateful_keys,
+            "offsets": stateful_offsets,
+            "lengths": stateful_lengths,
+        },
+    }
+    OUT_NATIVE_MANIFEST.write_text(
+        json.dumps(native_manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _remove_legacy_native_outputs() -> None:
+    if LEGACY_OUT_NATIVE_MANIFEST.exists():
+        LEGACY_OUT_NATIVE_MANIFEST.unlink()
+    if LEGACY_OUT_NATIVE_TOOL.exists():
+        shutil.rmtree(LEGACY_OUT_NATIVE_TOOL)
+
+
+def _write_codec_manifest(
+    entries,
+    aliases_by_name: dict[str, list[str]],
+    exact_aliases: dict[str, str],
+    normalized_aliases: dict[str, str],
+    sbcs_decode_tables: dict[str, list[int]],
+    sbcs_encode_tables: dict[str, dict[int, int]],
+    mbcs_single_tables: dict[str, list[int]],
+    mbcs_double_decode_maps: dict[str, dict[int, str]],
+    mbcs_triple_decode_maps: dict[str, dict[int, str]],
+    mbcs_encode_maps: dict[str, dict[int, list[int]]],
+    mbcs_implemented_codecs: list[str],
+    mbcs_pending_codecs: list[str],
+    gb18030_double_decode_map: dict[int, str],
+    gb18030_double_encode_map: dict[int, list[int]],
+    gb18030_bmp_ranges: list[tuple[int, int, int]],
+    iso2022_decode_maps: dict[str, dict[int, str]],
+    iso2022_encode_maps: dict[str, dict[int, list[int]]],
+    iso2022_width_map: dict[str, int],
+    iso2022_mode_map: dict[str, str],
+    hz_decode_map: dict[int, str],
+    hz_encode_map: dict[int, list[int]],
+    iso2022kr_decode_map: dict[int, str],
+    iso2022kr_encode_map: dict[int, list[int]],
+    codec_blob_payloads: dict[str, bytes],
+    catalog_meta: dict[str, str],
+    cpython_aliases_meta: dict[str, str],
+) -> None:
+    out = OUT_TOOL / "codec_manifest.json"
+    canonical_names = sorted(e.name.lower() for e in entries)
+    blob_hashes = {
+        key: _sha256_bytes(codec_blob_payloads[key]) for key in sorted(codec_blob_payloads)
+    }
+    blob_sizes = {
+        key: len(codec_blob_payloads[key]) for key in sorted(codec_blob_payloads)
+    }
+    unique_size_by_hash: dict[str, int] = {}
+    for key in sorted(codec_blob_payloads):
+        digest = blob_hashes[key]
+        unique_size_by_hash.setdefault(digest, blob_sizes[key])
+    deduplicated_blob_total_bytes = sum(unique_size_by_hash.values())
+    manifest = {
+        "blob_format_version": BLOB_FORMAT_VERSION,
+        "mbcs_double_storage_kind": MBCS_DOUBLE_STORAGE_KIND,
+        "canonical_count": len(canonical_names),
+        "canonical_names": canonical_names,
+        "multibyte_canonical_count": sum(1 for e in entries if e.is_multibyte),
+        "single_byte_canonical_count": sum(1 for e in entries if not e.is_multibyte),
+        "exact_alias_count": len(exact_aliases),
+        "normalized_alias_count": len(normalized_aliases),
+        "sbcs_decode_table_count": len(sbcs_decode_tables),
+        "sbcs_encode_table_count": len(sbcs_encode_tables),
+        "mbcs_table_codec_count": len(mbcs_single_tables),
+        "mbcs_implemented_codec_count": len(mbcs_implemented_codecs),
+        "mbcs_pending_codec_count": len(mbcs_pending_codecs),
+        "mbcs_table_codecs": mbcs_implemented_codecs,
+        "mbcs_pending_codecs": mbcs_pending_codecs,
+        "mbcs_stateful_codec_count": len(MBCS_STATEFUL_CODEC_NAMES),
+        "mbcs_stateful_codecs": list(MBCS_STATEFUL_CODEC_NAMES),
+        "mbcs_single_table_count": len(mbcs_single_tables),
+        "mbcs_double_decode_entry_count": sum(
+            len(v) for v in mbcs_double_decode_maps.values()
+        ),
+        "mbcs_triple_decode_entry_count": sum(
+            len(v) for v in mbcs_triple_decode_maps.values()
+        ),
+        "mbcs_encode_entry_count": sum(len(v) for v in mbcs_encode_maps.values()),
+        "gb18030_double_decode_entry_count": len(gb18030_double_decode_map),
+        "gb18030_double_encode_entry_count": len(gb18030_double_encode_map),
+        "gb18030_bmp_range_count": len(gb18030_bmp_ranges),
+        "iso2022_set_count": len(iso2022_decode_maps),
+        "iso2022_decode_entry_count": sum(len(v) for v in iso2022_decode_maps.values()),
+        "iso2022_encode_entry_count": sum(len(v) for v in iso2022_encode_maps.values()),
+        "iso2022_width_map_count": len(iso2022_width_map),
+        "iso2022_mode_map_count": len(iso2022_mode_map),
+        "hz_decode_entry_count": len(hz_decode_map),
+        "hz_encode_entry_count": len(hz_encode_map),
+        "iso2022kr_decode_entry_count": len(iso2022kr_decode_map),
+        "iso2022kr_encode_entry_count": len(iso2022kr_encode_map),
+        "codec_blob_count": len(codec_blob_payloads),
+        "codec_blob_total_bytes": sum(blob_sizes.values()),
+        "deduplicated_blob_count": len(unique_size_by_hash),
+        "deduplicated_blob_total_bytes": deduplicated_blob_total_bytes,
+        "deduplicated_blob_saved_bytes": sum(blob_sizes.values())
+        - deduplicated_blob_total_bytes,
+        "codec_blob_sizes": blob_sizes,
+        "codec_blob_hashes": blob_hashes,
+        "source_hashes": {
+            "codec_catalog.json": catalog_meta["sha256"],
+            "encodings_aliases.py": cpython_aliases_meta["source_sha256"],
+        },
+        "cpython_aliases": cpython_aliases_meta,
+        "reference_source": catalog_meta,
+        "alias_coverage": {
+            name: len(aliases_by_name[name]) for name in sorted(aliases_by_name)
+        },
+    }
+    out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def _split_chunks(s: str, n: int = 120) -> list[str]:
+    return [s[i : i + n] for i in range(0, len(s), n)]
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv:
+        raise RuntimeError(
+            "tool/export_codec_data.py no longer accepts external source inputs. "
+            "Run it without arguments and keep vendored metadata under tool/vendor/."
+        )
+    codec_entries, codec_catalog_meta = _load_codec_catalog(CODEC_CATALOG)
+    cpython_aliases, cpython_aliases_meta = _load_cpython_aliases_from_snapshot(
+        CPYTHON_ALIASES_SNAPSHOT
+    )
+
+    OUT_LIB.mkdir(parents=True, exist_ok=True)
+    OUT_TOOL.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_native_outputs()
+
+    codec_aliases_by_name = _build_registry_aliases(codec_entries, cpython_aliases)
+    codec_exact_aliases, codec_normalized_aliases = _build_codec_alias_maps(
+        codec_entries,
+        cpython_aliases,
+    )
+    sbcs_decode_tables = _build_single_byte_tables(codec_entries)
+    sbcs_encode_tables = _build_single_byte_encode_tables(
+        codec_entries,
+        sbcs_decode_tables,
+    )
+    _write_codec_alias_data(
+        codec_entries,
+        codec_exact_aliases,
+        codec_normalized_aliases,
+    )
+    _write_codec_meta_data(codec_entries)
+    codec_blob_payloads = _write_codec_sbcs_data(
+        codec_entries,
+        sbcs_decode_tables,
+        sbcs_encode_tables,
+    )
+    _write_codec_utf_data(codec_entries)
+    (
+        mbcs_single_tables,
+        mbcs_double_decode_maps,
+        mbcs_triple_decode_maps,
+        mbcs_encode_maps,
+        mbcs_implemented_table_codecs,
+        mbcs_pending_codecs_base,
+    ) = _build_multibyte_tables(codec_entries)
+    (
+        gb18030_double_decode_map,
+        gb18030_double_encode_map,
+        gb18030_bmp_ranges,
+    ) = _build_gb18030_maps()
+    (
+        iso2022_decode_maps,
+        iso2022_encode_maps,
+        iso2022_width_map,
+        iso2022_mode_map,
+    ) = _build_iso2022_maps()
+    hz_decode_map, hz_encode_map = _build_hz_maps()
+    iso2022kr_decode_map, iso2022kr_encode_map = _build_iso2022kr_maps()
+    _write_native_assets(
+        codec_entries,
+        sbcs_decode_tables,
+        sbcs_encode_tables,
+        mbcs_single_tables,
+        mbcs_double_decode_maps,
+        mbcs_triple_decode_maps,
+        mbcs_encode_maps,
+        gb18030_double_decode_map,
+        gb18030_double_encode_map,
+        gb18030_bmp_ranges,
+        iso2022_decode_maps,
+        iso2022_encode_maps,
+        iso2022_width_map,
+        iso2022_mode_map,
+        hz_decode_map,
+        hz_encode_map,
+        iso2022kr_decode_map,
+        iso2022kr_encode_map,
+    )
+    mbcs_implemented_codecs = sorted(
+        set(mbcs_implemented_table_codecs) | set(MBCS_STATEFUL_CODEC_NAMES)
+    )
+    mbcs_pending_codecs = sorted(
+        set(mbcs_pending_codecs_base) - set(MBCS_STATEFUL_CODEC_NAMES)
+    )
+    codec_blob_payloads.update(
+        _write_codec_mbcs_data(
+            codec_entries,
+            mbcs_single_tables,
+            mbcs_double_decode_maps,
+            mbcs_triple_decode_maps,
+            mbcs_encode_maps,
+            mbcs_implemented_table_codecs,
+            mbcs_pending_codecs,
+            gb18030_double_decode_map,
+            gb18030_double_encode_map,
+            gb18030_bmp_ranges,
+            iso2022_decode_maps,
+            iso2022_encode_maps,
+            iso2022_width_map,
+            iso2022_mode_map,
+            hz_decode_map,
+            hz_encode_map,
+            iso2022kr_decode_map,
+            iso2022kr_encode_map,
+        )
+    )
+    _write_codec_manifest(
+        codec_entries,
+        codec_aliases_by_name,
+        codec_exact_aliases,
+        codec_normalized_aliases,
+        sbcs_decode_tables,
+        sbcs_encode_tables,
+        mbcs_single_tables,
+        mbcs_double_decode_maps,
+        mbcs_triple_decode_maps,
+        mbcs_encode_maps,
+        mbcs_implemented_codecs,
+        mbcs_pending_codecs,
+        gb18030_double_decode_map,
+        gb18030_double_encode_map,
+        gb18030_bmp_ranges,
+        iso2022_decode_maps,
+        iso2022_encode_maps,
+        iso2022_width_map,
+        iso2022_mode_map,
+        hz_decode_map,
+        hz_encode_map,
+        iso2022kr_decode_map,
+        iso2022kr_encode_map,
+        codec_blob_payloads,
+        codec_catalog_meta,
+        cpython_aliases_meta,
+    )
+    print("Generated codec assets successfully.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

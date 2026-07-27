@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+tags:
+  full:
+    timeout: 30m
+  fixtures:
+    timeout: 30m
+
+presets:
+  quick:
+    exclude_tags: "full || fixtures"
+  full: {}

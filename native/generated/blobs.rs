@@ -1,0 +1,18 @@
+// 此文件由 tool/export_codec_data.py 自动生成，请勿手动修改。
+// SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+// SPDX-FileCopyrightText: 2001 Python Software Foundation
+// SPDX-License-Identifier: MIT AND PSF-2.0
+
+pub static SBCS_TABLES: &[u8] = include_bytes!("../assets/generated/sbcs_tables.bin");
+pub static MBCS_COLD_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_cold.bin");
+pub static MBCS_GB18030_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_hot/gb18030.bin");
+pub static MBCS_STATEFUL_TABLES: &[u8] = include_bytes!("../assets/generated/stateful.bin");
+pub static MBCS_HOT_BIG5_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_hot/big5.bin");
+pub static MBCS_HOT_CP932_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_hot/cp932.bin");
+pub static MBCS_HOT_EUC_JP_TABLES: &[u8] =
+    include_bytes!("../assets/generated/mbcs_hot/euc_jp.bin");
+pub static MBCS_HOT_EUC_KR_TABLES: &[u8] =
+    include_bytes!("../assets/generated/mbcs_hot/euc_kr.bin");
+pub static MBCS_HOT_GBK_TABLES: &[u8] = include_bytes!("../assets/generated/mbcs_hot/gbk.bin");
+pub static MBCS_HOT_SHIFT_JIS_TABLES: &[u8] =
+    include_bytes!("../assets/generated/mbcs_hot/shift_jis.bin");

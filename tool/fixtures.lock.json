@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "manifestSchemaVersion": 1,
+  "sources": {
+    "pythontestdotnet": {
+      "url": "https://github.com/python/pythontestdotnet/archive/50057cee2913fd99b3c1a8dd43c34a3cc79e0941.zip",
+      "sha256": "cefc96503b55411441c409e6dfea02b2222b0d0a9f9067ce1460b044547dc50e",
+      "archiveRootHint": "pythontestdotnet-50057cee2913fd99b3c1a8dd43c34a3cc79e0941"
+    }
+  },
+  "codeMaps": [
+    {
+      "filename": "CP932.TXT",
+      "encoding": "cp932",
+      "pythonCodec": "cp932",
+      "format": "txt"
+    },
+    {
+      "filename": "CP949.TXT",
+      "encoding": "cp949",
+      "pythonCodec": "cp949",
+      "format": "txt"
+    },
+    {
+      "filename": "EUC-KR.TXT",
+      "encoding": "euc-kr",
+      "pythonCodec": "euc_kr",
+      "format": "txt"
+    },
+    {
+      "filename": "JOHAB.TXT",
+      "encoding": "johab",
+      "pythonCodec": "johab",
+      "format": "txt"
+    },
+    {
+      "filename": "EUC-JISX0213.TXT",
+      "encoding": "euc-jis-2004",
+      "pythonCodec": "euc_jisx0213",
+      "format": "txt"
+    },
+    {
+      "filename": "SHIFT_JISX0213.TXT",
+      "encoding": "shift_jis_2004",
+      "pythonCodec": "shift_jis_2004",
+      "format": "txt"
+    },
+    {
+      "filename": "SHIFTJIS.TXT",
+      "encoding": "shift_jis",
+      "pythonCodec": "shift_jis",
+      "format": "txt"
+    },
+    {
+      "filename": "BIG5HKSCS-2004.TXT",
+      "encoding": "big5hkscs",
+      "pythonCodec": "big5hkscs",
+      "format": "txt"
+    },
+    {
+      "filename": "BIG5.TXT",
+      "encoding": "big5",
+      "pythonCodec": "big5",
+      "format": "txt"
+    },
+    {
+      "filename": "CP950.TXT",
+      "encoding": "cp950",
+      "pythonCodec": "cp950",
+      "format": "txt"
+    },
+    {
+      "filename": "CP936.TXT",
+      "encoding": "gbk",
+      "pythonCodec": "gbk",
+      "format": "txt"
+    },
+    {
+      "filename": "EUC-JP.TXT",
+      "encoding": "euc-jp",
+      "pythonCodec": "euc_jp",
+      "format": "txt"
+    },
+    {
+      "filename": "gb-18030-2000.xml",
+      "encoding": "gb18030",
+      "pythonCodec": "gb18030",
+      "format": "xml"
+    }
+  ],
+  "vectors": {
+    "schemaVersion": 1
+  }
+}

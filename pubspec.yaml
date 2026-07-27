@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+name: charset_codec
+description: "Cross-platform character encoding codecs aligned with CPython."
+version: 0.1.0
+repository: https://github.com/chenmozhijin/charset_codec
+issue_tracker: https://github.com/chenmozhijin/charset_codec/issues
+topics:
+  - character-encoding
+  - codec
+  - text
+  - native-assets
+  - ffi
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  code_assets: ^1.2.1
+  crypto: ^3.0.7
+  ffi: ^2.1.4
+  hooks: ^2.1.0
+  native_toolchain_rust: ^1.0.4
+
+dev_dependencies:
+  test: ^1.31.2
+  lints: ^6.0.0

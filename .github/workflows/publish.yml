@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.11.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: clippy, rustfmt
+      - run: dart pub get
+      - run: python tool/export_codec_data.py
+      - run: git diff --exit-code
+      - run: cargo fmt --manifest-path native/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path native/Cargo.toml
+      - run: dart analyze
+      - run: dart test
+      - run: dart test -p chrome
+      - run: dart pub publish --dry-run
+
+  publish:
+    needs: verify
+    permissions:
+      contents: read
+      id-token: write
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
