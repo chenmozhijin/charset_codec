@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import 'package:code_assets/code_assets.dart';
+import 'package:charset_codec/src/hook/build_support.dart';
 import 'package:hooks/hooks.dart';
-
-import 'build_support.dart';
 
 void main(List<String> args) async {
   await build(args, (input, output) async {
