@@ -97,6 +97,7 @@ jobs:
           cache: true
       - uses: dtolnay/rust-toolchain@1.94.0
       - run: flutter pub get
+      - run: flutter analyze
       - run: flutter test test/charset_codec_smoke.dart
       - if: runner.os == 'Linux'
         run: flutter build web --release

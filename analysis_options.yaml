@@ -2,3 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    - test/flutter_compat_app/**
