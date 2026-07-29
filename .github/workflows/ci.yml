@@ -102,6 +102,39 @@ jobs:
       - if: runner.os == 'Linux'
         run: flutter build web --release
 
+  flutter-mobile-compat:
+    name: Flutter 3.44 mobile compatibility (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: android
+          - os: macos-latest
+            platform: ios
+    defaults:
+      run:
+        working-directory: test/flutter_compat_app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+          cache: true
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+      - run: flutter create --platforms=${{ matrix.platform }} --project-name charset_codec_mobile .
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test test/charset_codec_smoke.dart
+      - if: matrix.platform == 'android'
+        run: flutter build apk --debug
+      - if: matrix.platform == 'ios'
+        run: flutter build ios --no-codesign --simulator
+
   publish-dry-run:
     name: Pub dry-run
     runs-on: ubuntu-latest
