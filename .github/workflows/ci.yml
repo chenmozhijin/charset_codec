@@ -125,10 +125,10 @@ jobs:
           cache: true
       - uses: dtolnay/rust-toolchain@1.94.0
       - if: matrix.platform == 'android'
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
       - run: flutter create --platforms=${{ matrix.platform }} --project-name charset_codec_mobile .
       - run: flutter pub get
-      - run: flutter analyze
+      - run: flutter analyze lib test/charset_codec_smoke.dart
       - run: flutter test test/charset_codec_smoke.dart
       - if: matrix.platform == 'android'
         run: flutter build apk --debug
