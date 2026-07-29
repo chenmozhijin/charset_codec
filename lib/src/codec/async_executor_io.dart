@@ -10,7 +10,8 @@ Future<T> runCodecAsync<T>(
   FutureOr<T> Function() computation, {
   int estimatedPayloadBytes = _isolatePayloadThresholdBytes,
 }) {
-  // 小歌词片段直接在当前 isolate 排队，避免大量短任务反复创建 isolate。
+  // Queue small inputs on the current isolate to avoid repeatedly creating
+  // isolates for short tasks.
   if (estimatedPayloadBytes < _isolatePayloadThresholdBytes) {
     return Future<T>.sync(computation);
   }

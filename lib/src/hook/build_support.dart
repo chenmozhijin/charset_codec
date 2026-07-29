@@ -216,7 +216,8 @@ String _sha256WithNormalizedNewlines(File file) {
     return sha256.convert(bytes).toString();
   }
 
-  // Git 可能按平台检出 CRLF；这里只规范化文本换行，不放宽其他字节的校验。
+  // Git may check out CRLF on some platforms. Normalize text line endings
+  // without relaxing validation for any other bytes.
   final List<int> normalized = <int>[];
   for (var index = 0; index < bytes.length; index += 1) {
     final int byte = bytes[index];

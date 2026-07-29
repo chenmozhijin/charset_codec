@@ -35,7 +35,8 @@ pub extern "C" fn charset_codec_backend_abi_version() -> u32 {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `bytes` 在 `length > 0` 时必须指向至少 `length` 个可读字节，并在调用期间保持有效。
+/// When `length > 0`, `bytes` must point to at least `length` readable bytes
+/// and remain valid for the duration of the call.
 pub unsafe extern "C" fn charset_codec_decode_to_utf16le(
     codec_id: u32,
     error_mode: u32,
@@ -50,7 +51,8 @@ pub unsafe extern "C" fn charset_codec_decode_to_utf16le(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `utf16_units` 在 `length > 0` 时必须正确对齐并指向至少 `length` 个可读 `u16`。
+/// When `length > 0`, `utf16_units` must be correctly aligned and point to at
+/// least `length` readable `u16` values.
 pub unsafe extern "C" fn charset_codec_encode_from_utf16(
     codec_id: u32,
     error_mode: u32,
@@ -65,7 +67,8 @@ pub unsafe extern "C" fn charset_codec_encode_from_utf16(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `bytes` 在 `length > 0` 时必须指向至少 `length` 个可读字节，并在调用期间保持有效。
+/// When `length > 0`, `bytes` must point to at least `length` readable bytes
+/// and remain valid for the duration of the call.
 pub unsafe extern "C" fn charset_codec_validate(
     codec_id: u32,
     bytes: *const u8,
@@ -77,7 +80,8 @@ pub unsafe extern "C" fn charset_codec_validate(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `result` 必须为空指针，或是本动态库返回且尚未释放的 `CodecResult`；同一指针只能释放一次。
+/// `result` must be null or an unreleased `CodecResult` returned by this
+/// library. Each pointer may be released only once.
 pub unsafe extern "C" fn charset_codec_free_result(result: *mut CodecResult) {
     if result.is_null() {
         return;
@@ -91,7 +95,8 @@ pub unsafe extern "C" fn charset_codec_free_result(result: *mut CodecResult) {
 
 pub(crate) fn catch_native_result<T>(f: impl FnOnce() -> NativeResult<T>) -> NativeResult<T> {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
-        // 生成数据或 native 索引损坏时，错误必须回到 Dart 层诊断，不能跨 FFI 边界崩溃宿主进程。
+        // Generated data or native index corruption must return a diagnostic to
+        // Dart instead of panicking across the FFI boundary.
         Err(err(
             0,
             "native charset backend failed while reading generated data",

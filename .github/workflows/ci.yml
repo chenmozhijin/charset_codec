@@ -12,6 +12,20 @@ permissions:
   contents: read
 
 jobs:
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.11.0
+      - run: dart pub get
+      - run: dart run example/charset_codec_example.dart
+      - run: dart doc --dry-run
+      - run: dart pub global activate pana 0.23.14
+      - run: dart pub global run pana . --exit-code-threshold 0
+
   validate:
     name: Validate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -63,6 +77,29 @@ jobs:
           sdk: 3.11.0
       - run: dart pub get
       - run: dart test -p chrome
+
+  flutter-stable-compat:
+    name: Flutter 3.44 compatibility (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: test/flutter_compat_app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+          cache: true
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - run: flutter pub get
+      - run: flutter test test/charset_codec_smoke.dart
+      - if: runner.os == 'Linux'
+        run: flutter build web --release
 
   publish-dry-run:
     name: Pub dry-run

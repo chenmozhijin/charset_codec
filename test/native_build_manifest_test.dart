@@ -95,7 +95,8 @@ void main() {
 }
 
 List<int> _normalizeNewlines(List<int> bytes) {
-  // 测试使用与 build hook 相同的规则，确保 LF/CRLF checkout 产生同一文本哈希。
+  // The test uses the same rule as the build hook so LF and CRLF checkouts
+  // produce the same text hash.
   final List<int> normalized = <int>[];
   for (var index = 0; index < bytes.length; index += 1) {
     final int byte = bytes[index];

@@ -3,7 +3,9 @@
 
 use crate::backend::{NativeResult, err};
 
-// 生成表属于发布资产，但仍必须按不可信输入解析：文件截断或版本错配不能通过索引越界终止宿主进程。
+// Generated tables are package assets but must still be parsed as untrusted
+// input: truncation or version mismatches must not terminate the host process
+// through an out-of-bounds index.
 pub(super) struct BlobReader<'a> {
     bytes: &'a [u8],
     cursor: usize,

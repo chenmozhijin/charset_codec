@@ -41,6 +41,8 @@ migrate_working_dir/
 *.snapshot
 *.diff
 
-# 维护者本地文档，不进入 Git 或发布归档
+# Maintainer-local documentation is excluded from Git and package archives.
 /docs/internal/
 /doc/
+/test/flutter_compat_app/build/
+/test/flutter_compat_app/pubspec.lock

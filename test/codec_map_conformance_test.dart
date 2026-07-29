@@ -32,7 +32,8 @@ void main() {
       expect(reason, isNull, reason: reason);
       final int? limit = _mapLimitFromEnv();
       mapCases = loadCodecMapCases(perEncodingLimit: limit);
-      // full preset 默认必须跑完整 fixture；只有显式 sampled/smoke 才允许抽样。
+      // The full preset must run the complete fixture; only explicit sampled or
+      // smoke modes may use a subset.
       // ignore: avoid_print
       print(
         "codec map conformance cases: ${mapCases.length} limit=${limit ?? 'all'}",

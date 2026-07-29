@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
+# SPDX-License-Identifier: MIT
+
+name: charset_codec_flutter_compat
+description: Flutter compatibility fixture for charset_codec.
+publish_to: none
+version: 0.0.0
+
+environment:
+  sdk: ">=3.11.0 <4.0.0"
+
+dependencies:
+  charset_codec:
+    path: ../..
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

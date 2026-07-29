@@ -11,7 +11,8 @@ publish = false
 crate-type = ["staticlib", "cdylib"]
 
 [profile.dev]
-# FFI 导出层使用 catch_unwind 将意外 panic 转成可诊断错误，因此构建策略必须允许展开。
+# The FFI export layer converts unexpected panics into diagnostic errors with
+# catch_unwind, so the build must allow unwinding.
 panic = "unwind"
 
 [profile.release]

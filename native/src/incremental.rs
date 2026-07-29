@@ -97,7 +97,8 @@ pub extern "C" fn charset_codec_incremental_encoder_create(codec_id: u32, error_
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 decoder session；`bytes` 必须与 `length` 描述的可读区域一致。
+/// `handle` must be a live decoder session. `bytes` must describe a readable
+/// region containing `length` bytes.
 pub unsafe extern "C" fn charset_codec_incremental_decoder_feed(
     handle: u64,
     bytes: *const u8,
@@ -113,7 +114,8 @@ pub unsafe extern "C" fn charset_codec_incremental_decoder_feed(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 encoder session；`units` 必须正确对齐并覆盖 `length` 个 `u16`。
+/// `handle` must be a live encoder session. `units` must be correctly aligned
+/// and cover `length` `u16` values.
 pub unsafe extern "C" fn charset_codec_incremental_encoder_feed_utf16(
     handle: u64,
     units: *const u16,
@@ -129,7 +131,8 @@ pub unsafe extern "C" fn charset_codec_incremental_encoder_feed_utf16(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 decoder session，且不能与其他线程并发访问。
+/// `handle` must be a live decoder session and must not be accessed concurrently
+/// by another thread.
 pub unsafe extern "C" fn charset_codec_incremental_decoder_close(
     handle: u64,
 ) -> *mut crate::backend::CodecResult {
@@ -140,7 +143,8 @@ pub unsafe extern "C" fn charset_codec_incremental_decoder_close(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 encoder session，且不能与其他线程并发访问。
+/// `handle` must be a live encoder session and must not be accessed concurrently
+/// by another thread.
 pub unsafe extern "C" fn charset_codec_incremental_encoder_close(
     handle: u64,
 ) -> *mut crate::backend::CodecResult {
@@ -151,7 +155,8 @@ pub unsafe extern "C" fn charset_codec_incremental_encoder_close(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 session，且不能与其他线程并发访问。
+/// `handle` must be a live session and must not be accessed concurrently by
+/// another thread.
 pub unsafe extern "C" fn charset_codec_incremental_session_reset(
     handle: u64,
 ) -> *mut crate::backend::CodecResult {
@@ -165,7 +170,8 @@ pub unsafe extern "C" fn charset_codec_incremental_session_reset(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 session，且不能与其他线程并发访问。
+/// `handle` must be a live session and must not be accessed concurrently by
+/// another thread.
 pub unsafe extern "C" fn charset_codec_incremental_session_get_state(
     handle: u64,
 ) -> *mut crate::backend::CodecResult {
@@ -176,7 +182,8 @@ pub unsafe extern "C" fn charset_codec_incremental_session_get_state(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是尚未销毁的 session；`state_bytes` 必须与 `state_length` 描述的可读区域一致。
+/// `handle` must be a live session. `state_bytes` must describe a readable
+/// region containing `state_length` bytes.
 pub unsafe extern "C" fn charset_codec_incremental_session_set_state(
     handle: u64,
     state_bytes: *const u8,
@@ -193,7 +200,8 @@ pub unsafe extern "C" fn charset_codec_incremental_session_set_state(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `handle` 必须是本动态库创建且尚未销毁的 session；同一 handle 只能销毁一次。
+/// `handle` must be a live session created by this library. Each handle may be
+/// destroyed only once.
 pub unsafe extern "C" fn charset_codec_incremental_session_destroy(handle: u64) {
     if handle == 0 {
         return;

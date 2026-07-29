@@ -76,7 +76,7 @@ String decodeStatefulMultibyteIncrementalChunk(
   required bool finalChunk,
 }) {
   if (state.codecId != codec.codecId) {
-    throw ArgumentError('增量 decoder 状态与 codec 不匹配');
+    throw ArgumentError('Incremental decoder state does not match the codec');
   }
   final List<int> bytes = <int>[...state.pendingBytes, ...chunk];
   state.pendingBytes.clear();
@@ -141,7 +141,7 @@ List<int> encodeStatefulMultibyteIncrementalChunk(
   required bool finalChunk,
 }) {
   if (state.codecId != codec.codecId) {
-    throw ArgumentError('增量 encoder 状态与 codec 不匹配');
+    throw ArgumentError('Incremental encoder state does not match the codec');
   }
   String text = state.pendingScalar + chunk;
   state.pendingScalar = '';

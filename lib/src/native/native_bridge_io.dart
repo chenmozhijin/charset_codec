@@ -20,7 +20,8 @@ final Finalizer<int> _incrementalSessionFinalizer = Finalizer<int>((
   try {
     charset_codec_incremental_session_destroy(handle);
   } catch (_) {
-    // GC 兜底不能影响业务流程，显式 close 会主动释放 native session。
+    // Garbage collection is only a fallback; explicit close releases the
+    // native session during normal operation.
   }
 });
 
@@ -44,7 +45,8 @@ final class IoNativeCodecBridge implements NativeCodecBridge {
 
   @override
   bool supportsIncrementalCodec(ResolvedCodec resolved) {
-    // UTF one次性路径已完整 native 化；增量 UTF 仍使用 Dart 状态机，避免 BOM/分块边界语义退化。
+    // One-shot UTF conversion is fully native; incremental UTF stays in the
+    // Dart state machine to preserve BOM and chunk-boundary semantics.
     return supportsCodec(resolved) && !resolved.isUtf;
   }
 
@@ -309,7 +311,8 @@ final class IoNativeCodecBridge implements NativeCodecBridge {
         reason: 'native UTF-16LE result has an odd byte length',
       );
     }
-    // FFI 使用固定小端 UTF-16 传输，既保留合法代理对，也保留 UTF-7 可表示的孤立代理项。
+    // FFI uses fixed little-endian UTF-16 transport, preserving valid surrogate
+    // pairs and the lone surrogate code units representable by UTF-7.
     if (Endian.host == Endian.little) {
       return String.fromCharCodes(
         Uint16List.view(bytes.buffer, bytes.offsetInBytes, bytes.length ~/ 2),

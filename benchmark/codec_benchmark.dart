@@ -33,7 +33,8 @@ void main(List<String> args) {
     '--regression-threshold',
     fallback: 0.25,
   );
-  // Windows 会锁定已加载的 DLL，因此冷启动子进程必须在父进程首次触发 native FFI 前完成。
+  // Windows locks loaded DLLs, so the cold-start child process must begin before
+  // the parent first touches native FFI.
   final Map<String, Object> memoryProbe = <String, Object>{
     'cold_decode': _coldDecodeRssProbe(rssSamples),
     'stateful_incremental': _statefulIncrementalRssProbe(),
@@ -99,7 +100,8 @@ void main(List<String> args) {
     ),
     'warmup_iterations': warmupIters,
     'measure_iterations': measureIters,
-    // 低迭代只能证明脚本和依赖可运行，不能作为真实性能基线。
+    // A low iteration count only proves that the script and dependencies run; it
+    // is not a representative performance baseline.
     'benchmark_profile': measureIters < 30 ? 'smoke' : 'measured',
     'benchmarks': <String, Object>{
       'cold_cp932_decode': _bench(warmupIters, measureIters, () {
@@ -554,7 +556,8 @@ void _runColdRssProbeChild() {
   final int before = ProcessInfo.currentRss;
   decodeBytes(sampleBytes, encoding: 'cp932');
   final int after = ProcessInfo.currentRss;
-  // 子进程只输出单行 JSON，父进程可以忽略 build hook 的其他日志并稳定解析最后一行。
+  // The child process emits one JSON line, so the parent can ignore other build
+  // hook logs and parse the final line deterministically.
   // ignore: avoid_print
   print(jsonEncode(<String, int>{'before': before, 'after': after}));
 }
@@ -600,16 +603,13 @@ Map<String, Object> _statefulIncrementalRssProbe() {
     'iso-2022-jp',
     'utf-7',
   ]) {
-    final ProcessResult result = Process.runSync(
-      Platform.resolvedExecutable,
-      <String>[
-        'run',
-        'benchmark/codec_benchmark.dart',
-        '--stateful-rss-probe-child',
-        encoding,
-      ],
-      workingDirectory: Directory.current.path,
-    );
+    final ProcessResult result =
+        Process.runSync(Platform.resolvedExecutable, <String>[
+          'run',
+          'benchmark/codec_benchmark.dart',
+          '--stateful-rss-probe-child',
+          encoding,
+        ], workingDirectory: Directory.current.path);
     if (result.exitCode != 0) {
       throw StateError(
         'stateful RSS probe child failed for $encoding: ${result.stderr}',

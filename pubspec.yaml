@@ -3,7 +3,7 @@
 
 name: charset_codec
 description: "Cross-platform character encoding codecs aligned with CPython."
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/chenmozhijin/charset_codec
 issue_tracker: https://github.com/chenmozhijin/charset_codec/issues
 topics:
@@ -20,7 +20,7 @@ dependencies:
   code_assets: ^1.2.1
   crypto: ^3.0.7
   ffi: ^2.1.4
-  hooks: ^2.1.0
+  hooks: ">=2.0.2 <2.1.0"
   native_toolchain_rust: ^1.0.4
 
 dev_dependencies:

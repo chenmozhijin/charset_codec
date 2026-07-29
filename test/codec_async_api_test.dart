@@ -39,5 +39,17 @@ void main() {
       ], 'ascii');
       expect(async, equals(sync));
     });
+
+    test(
+      'isValidDataForEncodingAsync returns false for unknown encoding',
+      () async {
+        expect(
+          await isValidDataForEncodingAsync(const <int>[
+            0x41,
+          ], 'x-unknown-encoding'),
+          isFalse,
+        );
+      },
+    );
   });
 }

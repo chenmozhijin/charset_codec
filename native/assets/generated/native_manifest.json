@@ -111,7 +111,7 @@
   "build_validation": {
     "generator_inputs": {
       "tool/export_codec_data.py": {
-        "sha256": "272b2643e4c9c2604f1c126e09cbf2ac481d3baddaed90c18a1c644212df3df0",
+        "sha256": "673f80c7fe4898b025bd0cf18d3fb10369009cc286add03fcaf4dd1d22a4f155",
         "normalize_newlines": true
       },
       "tool/vendor/codec_catalog.json": {
@@ -123,7 +123,7 @@
         "normalize_newlines": true
       },
       "native/Cargo.toml": {
-        "sha256": "0bfa8cdb7fec51ffb17e69a64826a23bd2429a9755ad8e8a49ef6445fe903d9e",
+        "sha256": "7e6f94f4eb7a5e88f2e5b60224f3e7a54de413ba9852685ebdb7e6530da8a9bf",
         "normalize_newlines": true
       },
       "native/rust-toolchain.toml": {
@@ -133,19 +133,19 @@
     },
     "required_outputs": {
       "native/generated/blobs.rs": {
-        "sha256": "12300ad6431ff28bd754eba36969fdc85b49ec76c32667734f9c986e243662e2",
+        "sha256": "48e5b9787bed0164f3c1818a9a2b00094ee0d664064a23dcf2c1ee1009d912cf",
         "normalize_newlines": true,
-        "sha256_no_ascii_ws": "0e7ce2d5166913de56a7ffe2929c2caf9ca688043580a0c41c9a5bea78ebe08e"
+        "sha256_no_ascii_ws": "4830389d5681d90dddb9852b93248981559c69ecb7239b08b8393ccb80897bb1"
       },
       "native/generated/codec_index.rs": {
-        "sha256": "d1cee261b95e53f6c757c2ad6d7c03537376dd4bbe919fc36c654ad91674d0d8",
+        "sha256": "e0db26969c6c47b6e7e4b72d912f0d2ff4f4a18a0bdbc204b7d2f379b8e30e9f",
         "normalize_newlines": true,
-        "sha256_no_ascii_ws": "d15a1ae9c8f69bc229f1728b3ad34b8638a4de0d84e5882a26b35e8524370b43"
+        "sha256_no_ascii_ws": "096051760da6c8bb82293e01e97d13423507ff04a43133073e0193b3bfe17b4a"
       },
       "native/generated/mod.rs": {
-        "sha256": "72173df8465418d136dd7e03b1cd15707d1b6e4e55da795ada0a775356aebf4c",
+        "sha256": "ee3bf9e0ab51f06edb4b78152684a6f3129d500bbe3fa2f56e54f78fd3a2b7d2",
         "normalize_newlines": true,
-        "sha256_no_ascii_ws": "7a7c61182f2fd9c6956bf32bccf61ae665581df342d9e7b013f3e1dc28539453"
+        "sha256_no_ascii_ws": "fae3de5198c211190e53fc0842d29545a929d91027c6069418b73a0a657d8e18"
       },
       "native/assets/generated/mbcs_cold.bin": {
         "sha256": "21b574b041c2998e1c8214ef01830202a92f3f19c0d051664f070d6b96fb55c9"

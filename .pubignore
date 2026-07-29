@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: 2026 沉默の金 <cmzj@cmzj.org>
 # SPDX-License-Identifier: MIT
 
-# 仅排除维护者本地文档；代码、测试、工具和 native 构建输入仍属于仓库内容。
-/docs/internal/
+# Exclude internal docs and non-runtime validation inputs from the package.
+/docs/
 /doc/
+/benchmark/
+/test/
 /native/target/
 /tool/generated/benchmark_history/
