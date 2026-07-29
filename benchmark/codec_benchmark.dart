@@ -603,13 +603,17 @@ Map<String, Object> _statefulIncrementalRssProbe() {
     'iso-2022-jp',
     'utf-7',
   ]) {
-    final ProcessResult result =
-        Process.runSync(Platform.resolvedExecutable, <String>[
-          'run',
-          'benchmark/codec_benchmark.dart',
-          '--stateful-rss-probe-child',
-          encoding,
-        ], workingDirectory: Directory.current.path);
+    final List<String> childArguments = <String>[
+      'run',
+      'benchmark/codec_benchmark.dart',
+      '--stateful-rss-probe-child',
+      encoding,
+    ];
+    final ProcessResult result = Process.runSync(
+      Platform.resolvedExecutable,
+      childArguments,
+      workingDirectory: Directory.current.path,
+    );
     if (result.exitCode != 0) {
       throw StateError(
         'stateful RSS probe child failed for $encoding: ${result.stderr}',
